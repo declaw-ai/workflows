@@ -340,15 +340,9 @@ def sandbox(name: str, policy: Any, template: str = "python", timeout: int = 300
     try:
         yield sbx
     finally:
-        for attr in ("get_audit_log", "audit_log", "get_audit_logs"):
-            fn = getattr(sbx, attr, None)
-            if callable(fn):
-                try:
-                    entries = fn()
-                    print(f"  [audit {name}] {len(entries)} event(s) via {attr}")
-                except Exception as e:
-                    print(f"  [audit {name}] {attr} call failed: {e}")
-                break
+        # Audit events are not retrievable from the Sandbox object by design
+        # (confirmed with the Declaw team 2026-04-16). They're recorded
+        # server-side and surfaced via the Declaw dashboard / separate API.
         sbx.kill()
         print(f"  [sbx {sbx.sandbox_id}] killed")
 

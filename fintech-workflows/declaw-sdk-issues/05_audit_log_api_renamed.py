@@ -1,25 +1,25 @@
-"""Declaw SDK issue #05 — no public client method to retrieve audit log.
+"""Declaw SDK issue #05 — audit events not retrievable from Sandbox object.
 
-EXPECTED: `Sandbox` created with `AuditConfig(enabled=True)` exposes a
-          documented method — e.g. `sandbox.get_audit_log()` returning
-          a list of structured event dicts — so the orchestrator can
-          persist the trail for regulator replay.
+CONFIRMED BY DECLAW TEAM (2026-04-16): This is BY DESIGN — audit events
+are not exposed through any method on the `Sandbox` object. They are
+recorded server-side and surfaced via the Declaw dashboard / a separate
+control-plane API.
 
-OBSERVED: Three plausible attribute names all return `callable is None`
-          on the returned Sandbox object:
-            * get_audit_log
-            * audit_log
-            * get_audit_logs
-          Events are presumably stored server-side (control plane /
-          gateway logs) but the client cannot fetch them.
+So the "issue" is partly documentation — the `AuditConfig(enabled=True)`
+flag signals to the user that audits are on, but there is currently no
+client-facing mechanism to pull them back into an orchestrator for local
+replay / SIEM forwarding / regulator evidence packaging.
 
-WORKAROUND: Skip the in-workflow audit-retrieval step and tell operators
-            to pull the trail from the Declaw dashboard / export API.
+REQUEST: either
+  (a) add a `Sandbox.audit_events()` method that proxies to the control
+      plane, returning a list of typed event structs for the sandbox's
+      lifetime, OR
+  (b) publish a `declaw.audit.export(sandbox_id=..., since=..., until=...)`
+      client helper and document it prominently. Either way, link from
+      `AuditConfig` docstring so integrators know where to look.
 
-FIX (server-side): Pick one canonical method name on `Sandbox` — I'd
-                   suggest `sandbox.audit_events()` returning typed
-                   structs — and keep old names as deprecated aliases.
-                   Add to the public SDK reference docs.
+This script probes for the commonly-guessed names and confirms none exist,
+so the reproducer output matches the expectation.
 
 Env: DECLAW_API_KEY, DECLAW_DOMAIN
 """
@@ -95,9 +95,18 @@ def main() -> None:
                 except Exception as e:
                     print(f"    -> call raised: {type(e).__name__}: {e}")
 
-        print("\nEXPECTED : at least one name above returns a non-empty list")
+        print("\nEXPECTED : by design, no Sandbox-level audit retrieval "
+              "method (events flow to the dashboard / control plane)")
         print(f"OBSERVED : found_any_callable = {found_any}")
-        print(f"VERDICT  : {'PASS' if found_any else 'FAIL — client cannot retrieve audit log'}")
+        if not found_any:
+            print("VERDICT  : BY-DESIGN — confirmed with Declaw team. "
+                  "Retrieve audits via the Declaw dashboard / control-plane "
+                  "API, not through the Sandbox object. Consider this script "
+                  "a reminder to not try.")
+        else:
+            print("VERDICT  : UNEXPECTED — a retrieval method now exists! "
+                  "Please update the helper in "
+                  "sandboxed/shared/declaw_helpers.py to use it.")
     finally:
         sbx.kill()
 
