@@ -94,6 +94,27 @@ def main() -> None:
             read_back = line.split(":", 1)[1].strip()
             break
 
+    # Distinguish "request never reached OpenAI" (upstream blocked by #02)
+    # from "got a response but rehydration didn't happen" (#01 proper).
+    upstream_blocked = (
+        "could not parse the JSON body" in err
+        or "BadRequestError" in err
+    )
+    if upstream_blocked:
+        print("\nEXPECTED : agent reads original email + name after rehydration")
+        print("OBSERVED : request never reached OpenAI — blocked by issue #02 "
+              "(outbound JSON mangling). #01 cannot be tested in isolation "
+              "until #02 is fixed.")
+        print("VERDICT  : BLOCKED-BY-#02")
+        return
+
+    if not read_back:
+        print("\nEXPECTED : agent reads original email + name after rehydration")
+        print("OBSERVED : script errored without an AGENT_READ_BACK line "
+              f"(stderr head: {err[:200]!r})")
+        print("VERDICT  : UNKNOWN (script crashed)")
+        return
+
     email_ok = "alice@example.com" in read_back
     name_ok = "Alice Smith" in read_back
     print("\nEXPECTED : agent reads original email + name after rehydration")

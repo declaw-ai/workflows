@@ -33,8 +33,8 @@ from declaw import (
 )
 
 
-def policy_no_rehydrate() -> SecurityPolicy:
-    # rehydrate=False so we see exactly what the model received.
+def policy_no_rehydrate(allow_domains) -> SecurityPolicy:
+    # rehydrate=False so we see exactly what the destination received.
     return SecurityPolicy(
         pii=PIIConfig(
             enabled=True,
@@ -42,12 +42,28 @@ def policy_no_rehydrate() -> SecurityPolicy:
             action="redact",
             rehydrate_response=False,
         ),
-        network=NetworkPolicy(
-            allow_out=["api.openai.com", "pypi.org", "*.pythonhosted.org"],
-            deny_out=[ALL_TRAFFIC],
-        ),
+        network=NetworkPolicy(allow_out=allow_domains,
+                              deny_out=[ALL_TRAFFIC]),
         audit=AuditConfig(enabled=True),
     )
+
+
+HTTPBIN_PROBE = textwrap.dedent("""
+    # Isolated from issue #02 — httpbin echoes the JSON body back without
+    # re-parsing, so we can see exactly what the redactor left intact.
+    import json, ssl, urllib.request
+    ctx = ssl._create_unverified_context()
+    body = json.dumps({
+        "ssn": "123-45-6789",
+        "email": "alice@example.com",
+        "name": "Alice Smith",
+    }).encode()
+    r = urllib.request.urlopen(urllib.request.Request(
+        "https://httpbin.org/post", data=body,
+        headers={"Content-Type":"application/json"}), timeout=15, context=ctx)
+    echoed = json.loads(r.read().decode())["json"]
+    print("DEST_SAW:", json.dumps(echoed))
+""")
 
 
 # Ship the Accept-Encoding shim inline so we see the MODEL-visible string.
@@ -83,12 +99,11 @@ SHIM = textwrap.dedent("""
 """)
 
 
-def run() -> tuple[str, str]:
-    if not (os.getenv("DECLAW_API_KEY") and os.getenv("OPENAI_API_KEY")):
-        print("need DECLAW_API_KEY + OPENAI_API_KEY")
-        sys.exit(0)
+def run_openai() -> tuple[str, str]:
     sbx = Sandbox.create(
-        template="ai-agent", timeout=120, security=policy_no_rehydrate(),
+        template="ai-agent", timeout=120,
+        security=policy_no_rehydrate(["api.openai.com", "pypi.org",
+                                      "*.pythonhosted.org"]),
         envs={"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]},
     )
     try:
@@ -100,32 +115,82 @@ def run() -> tuple[str, str]:
         sbx.kill()
 
 
+def run_httpbin() -> tuple[str, str]:
+    sbx = Sandbox.create(
+        template="ai-agent", timeout=120,
+        security=policy_no_rehydrate(["httpbin.org"]),
+    )
+    try:
+        sbx.files.write("/tmp/script.py", HTTPBIN_PROBE)
+        r = sbx.commands.run("python3 /tmp/script.py", timeout=60)
+        return r.stdout or "", r.stderr or ""
+    finally:
+        sbx.kill()
+
+
 def main() -> None:
     print("=" * 72)
     print("Declaw SDK issue #03 — built-in `ssn` type does not redact")
     print("=" * 72)
-    out, err = run()
-    print(out)
-    if err:
-        print("[stderr]", err[:400])
 
+    if not (os.getenv("DECLAW_API_KEY") and os.getenv("OPENAI_API_KEY")):
+        print("need DECLAW_API_KEY + OPENAI_API_KEY")
+        sys.exit(0)
+
+    # (A) Isolated httpbin probe — independent of issue #02.
+    print("\n[A] httpbin.org/post probe (isolates #03 from #02):")
+    out_b, err_b = run_httpbin()
+    print(out_b)
+    if err_b:
+        print("[stderr]", err_b[:300])
+
+    dest_saw = ""
+    for line in out_b.splitlines():
+        if line.startswith("DEST_SAW:"):
+            dest_saw = line.split(":", 1)[1].strip()
+            break
+
+    if dest_saw:
+        ssn_redacted_b = "123-45-6789" not in dest_saw
+        email_redacted_b = "alice@example.com" not in dest_saw
+        name_redacted_b = "Alice Smith" not in dest_saw
+        print(f"[A] ssn_redacted={ssn_redacted_b}, "
+              f"email_redacted={email_redacted_b}, name_redacted={name_redacted_b}")
+    else:
+        ssn_redacted_b = email_redacted_b = name_redacted_b = None
+        print("[A] httpbin probe did not produce DEST_SAW — check stderr above")
+
+    # (B) OpenAI probe — may be masked by #02. Informational only.
+    print("\n[B] OpenAI echo probe (may hit issue #02 first):")
+    out_a, err_a = run_openai()
+    print(out_a)
+    upstream_blocked = (
+        "could not parse the JSON body" in (err_a + out_a)
+        or "BadRequestError" in (err_a + out_a)
+    )
     model_saw = ""
-    for line in out.splitlines():
+    for line in out_a.splitlines():
         if line.startswith("MODEL_SAW:"):
             model_saw = line.split(":", 1)[1].strip()
             break
 
-    ssn_redacted = "123-45-6789" not in model_saw
-    email_redacted = "alice@example.com" not in model_saw
-    name_redacted = "Alice Smith" not in model_saw
+    if upstream_blocked and not model_saw:
+        print("[B] BLOCKED-BY-#02 (as expected when SSN redaction in a "
+              "JSON body hits the proxy's outbound mangling path)")
+    elif model_saw:
+        print(f"[B] MODEL_SAW: {model_saw!r}")
 
-    print("\nEXPECTED : all three identifiers replaced with [REDACTED_*]")
-    print(f"OBSERVED : ssn_redacted={ssn_redacted}, "
-          f"email_redacted={email_redacted}, name_redacted={name_redacted}")
-    if email_redacted and name_redacted and not ssn_redacted:
-        print("VERDICT  : FAIL — `ssn` type present in config but not enforced")
-    elif all([ssn_redacted, email_redacted, name_redacted]):
-        print("VERDICT  : PASS")
+    # Final verdict is driven by the httpbin probe (which is independent
+    # of #02). If httpbin couldn't run at all, fall back to UNKNOWN.
+    print("\nEXPECTED : all three identifiers replaced with [REDACTED_*] "
+          "on both paths")
+    if dest_saw is None or ssn_redacted_b is None:
+        print("VERDICT  : UNKNOWN (httpbin probe did not return DEST_SAW)")
+    elif email_redacted_b and name_redacted_b and not ssn_redacted_b:
+        print("VERDICT  : FAIL — `ssn` type present in config but not enforced "
+              "(email + name redacted correctly; SSN passes through)")
+    elif all([ssn_redacted_b, email_redacted_b, name_redacted_b]):
+        print("VERDICT  : PASS (all three types enforced on the httpbin path)")
     else:
         print("VERDICT  : DEGRADED — multiple types not firing, check PIIConfig")
 
