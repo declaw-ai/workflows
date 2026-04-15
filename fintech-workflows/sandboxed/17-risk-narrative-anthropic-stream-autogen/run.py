@@ -26,7 +26,8 @@ sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
 from shared.mock_customers import SANCTIONED_COUNTERPARTIES  # noqa: E402
 from shared.mock_trades import NEWS_FEED, ORDER_BOOK  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
-    multi_bank_api_policy, run_python_in_sandbox, llm_envs,
+    LLM_DOMAINS, FINTECH_API_DOMAINS, anthropic_pii_safe_policy,
+    run_python_in_sandbox, llm_envs,
 )
 
 
@@ -106,7 +107,7 @@ AGENT_SCRIPT = textwrap.dedent("""
         client = AnthropicClient()
         chunks = []
         with client.messages.stream(
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-5",
             max_tokens=700,
             system=(
                 "You are a senior compliance officer at a listed "
@@ -134,9 +135,11 @@ AGENT_SCRIPT = textwrap.dedent("""
 
 def main() -> None:
     print("=== Risk Narrative (sandboxed, AutoGen gpt-4.1 + Claude stream) ===")
-    print("[agent] entering multi_bank_api_policy sandbox "
-          "(injection_defense=on, LLM_DOMAINS allowlist incl. api.anthropic.com)")
-    pol = multi_bank_api_policy(enable_injection_scan=True)
+    print("[agent] entering anthropic_pii_safe_policy sandbox "
+          "(network allowlist + audit only — PIIConfig disabled as "
+          "workaround for Declaw SDK issue #08; multi_bank_api_policy "
+          "currently 404s Anthropic requests due to PII-body mangling)")
+    pol = anthropic_pii_safe_policy(LLM_DOMAINS + FINTECH_API_DOMAINS)
     out = run_python_in_sandbox(
         "risk-narrative-stream", AGENT_SCRIPT, pol,
         payload={

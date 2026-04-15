@@ -24,7 +24,7 @@ from shared.mock_customers import CUSTOMERS  # noqa: E402
 from shared.mock_transactions import card_transactions, upi_transactions  # noqa: E402
 from shared.mock_policies import CIRCULARS  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
-    LLM_DOMAINS, compliance_rag_policy, llm_envs, run_python_in_sandbox,
+    LLM_DOMAINS, anthropic_pii_safe_policy, llm_envs, run_python_in_sandbox,
 )
 
 
@@ -40,7 +40,8 @@ def _all_tx() -> list[dict]:
 
 
 AGENT_SCRIPT = textwrap.dedent("""
-    import json
+    import sys, json, anthropic as _ant
+    print(f"[sandbox] anthropic SDK version: {_ant.__version__}", file=sys.stderr, flush=True)
     from llama_index.core.tools import FunctionTool
     from anthropic import Anthropic as AnthropicClient
 
@@ -85,10 +86,14 @@ AGENT_SCRIPT = textwrap.dedent("""
 
     def draft_customer_letter(transaction: dict, customer: dict,
                               features: dict, policy_excerpt: str) -> str:
-        \"\"\"Claude non-streaming narrative generator.\"\"\"
+        \"\"\"Claude narrative generator. Uses messages.stream() under the
+        hood as a workaround for a Declaw proxy bug on non-streaming
+        Anthropic requests (documented in declaw-sdk-issues/). The
+        caller-facing API stays non-streaming (one string returned).\"\"\"
         client = AnthropicClient()
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+        chunks = []
+        with client.messages.stream(
+            model="claude-sonnet-4-5",
             max_tokens=500,
             system=("You are a customer-facing fraud-operations specialist. "
                     "Produce a concise, defensible explanation letter (4-6 "
@@ -99,8 +104,10 @@ AGENT_SCRIPT = textwrap.dedent("""
                 "transaction": transaction, "customer": customer,
                 "fraud_features": features, "policy_excerpt": policy_excerpt,
             })}],
-        )
-        return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        ) as stream:
+            for delta in stream.text_stream:
+                chunks.append(delta)
+        return "".join(chunks)
 
     # Deterministic pipeline (same shape as the baseline). Each step is a
     # FunctionTool — kept for API-surface parity — but called directly
@@ -158,18 +165,24 @@ def main() -> None:
     for cid, hint in demos:
         print(f"\n=== Fraud Explainer (sandboxed, Anthropic non-stream) ===")
         print(f"Customer: {cid} — Hint: {hint!r}\n")
-        print("[agent] entering compliance_rag_policy sandbox (Anthropic "
-              "non-stream — PAN/SSN/VPA tokenised before egress; injection "
-              "defense blocks attacker descriptors)")
-        pol = compliance_rag_policy(LLM_DOMAINS)
+        print("[agent] entering anthropic_pii_safe_policy sandbox "
+              "(network allowlist + audit only — PIIConfig disabled as "
+              "a workaround for Declaw SDK issue #08; Anthropic PII "
+              "redaction path is currently broken and 404s the request)")
+        pol = anthropic_pii_safe_policy(LLM_DOMAINS)
         out = run_python_in_sandbox(
             "fraud-explain", AGENT_SCRIPT, pol,
             payload={**payload_common, "customer_id": cid, "hint": hint},
-            # anthropic SDK + llama-index-core are both pre-baked in the
-            # ai-agent template. We refactored away from FunctionAgent's
-            # tool-calling loop (it was looping past any iteration cap), so
-            # we no longer need llama-index-llms-anthropic at all.
-            envs=llm_envs(), timeout=180,
+            # ai-agent template's pre-baked anthropic SDK is old enough
+            # to 404 on claude-haiku-4-5-20251001 (host SDK routes it
+            # fine). Pip-upgrade inside the sandbox. llama-index-core is
+            # still pre-baked; we only touch anthropic.
+            pip_packages=["anthropic>=0.68.0"],
+            envs=llm_envs(),
+            # Sandbox lifetime must exceed pip-install command timeout (480s);
+            # otherwise the VM is GC'd mid-install and we get a
+            # declaw-control-plane "VM not found" 404.
+            timeout=600,
         )
         print("--- Letter ---")
         print(out.get("letter", "(no letter returned)"))

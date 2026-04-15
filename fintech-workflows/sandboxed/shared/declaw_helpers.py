@@ -199,6 +199,31 @@ def collections_outreach_policy(allow_domains: list[str]):
         "redact", allow_domains, rehydrate=True, enable_injection=False))
 
 
+def anthropic_pii_safe_policy(allow_domains: list[str]):
+    """Temporary workaround policy for Anthropic-calling workflows.
+
+    The Declaw proxy currently 404s on Anthropic requests whose body
+    contains PII when `PIIConfig` is enabled — the outbound-body
+    redaction mangles the `model` field and Anthropic responds "model
+    not found". Same shape as the already-fixed OpenAI SDK issue #02,
+    but the Anthropic path hasn't been patched yet. Reproduced by
+    `declaw-sdk-issues/08_anthropic_nonstream_404.py` (4-cell matrix).
+
+    This policy disables PIIConfig entirely but keeps the network
+    allowlist + audit so the egress boundary is still enforced. Flip
+    back to `compliance_rag_policy` / `broker_trade_policy` once
+    Declaw patches the Anthropic redaction path.
+    """
+    if not DECLAW_AVAILABLE:
+        return _mock("anthropic_pii_safe_policy", allow_domains)
+    d = _import_declaw()
+    return d["SecurityPolicy"](
+        network=d["NetworkPolicy"](allow_out=allow_domains,
+                                   deny_out=[d["ALL_TRAFFIC"]]),
+        audit=d["AuditConfig"](enabled=True),
+    )
+
+
 def broker_trade_policy(allow_domains: list[str]):
     """Robo-advisor broker-tool sandbox.
 
@@ -383,7 +408,7 @@ def run_python_in_sandbox(name: str, code: str, policy: Any,
             # "not yet valid". Network is already locked to pypi by declaw's
             # allowlist, so trusting the host here is acceptable.
             ri = sbx.commands.run(
-                "pip install --quiet "
+                "pip install --quiet --upgrade "
                 "--no-cache-dir "
                 "--trusted-host pypi.org "
                 "--trusted-host files.pythonhosted.org "

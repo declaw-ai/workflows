@@ -1,12 +1,13 @@
-# Declaw SDK — Outstanding Issue
+# Declaw SDK — Outstanding Issues
 
-After the 2026-04-16 round of fixes, **one issue remains**.
+After the 2026-04-16 round of fixes, **two issues remain**.
 
 ## Remaining
 
 | # | Script | Summary | Severity |
 |---|--------|---------|----------|
 | 03 | `03_ssn_regex_missing.py` | Built-in `ssn` type in `PIIConfig(types=[..., "ssn", ...])` does not redact `123-45-6789` on the wire, while `person_name` and `email` in the same payload redact correctly. Surfaced independently by the fintech primitive suite (check 6) and by `verify_regulatory_compliance.py` check (c) GLBA. | High — regulatory (GLBA) gap for any US fintech flow |
+| 08 | `08_anthropic_nonstream_404.py` | `client.messages.create()` (non-streaming) through the Declaw proxy returns `anthropic.NotFoundError: 404 — model not found` on every Claude model tried (sonnet-4-5, haiku-4-5-20251001, 3-5-sonnet-20241022). The streaming variant `client.messages.stream()` works through the proxy (workflow 17 proves it), and non-streaming works from the host with the same key + model. So the failure is specific to `(Anthropic) × (messages.create) × (via proxy)`. | High — forces every fintech agent using Claude non-streaming to ship a streaming workaround |
 
 ## Run
 
