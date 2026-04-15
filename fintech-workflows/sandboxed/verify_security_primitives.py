@@ -82,19 +82,29 @@ def check(name: str):
     return deco
 
 
-# 1. Network allowlist works
-@check("1. Network policy — evil.com blocked, api.openai.com reachable")
+# 1. Network allowlist works (L7 — matches health-tech's realistic probe).
+# (The L4-raw-socket variant is retained as a separate reproducer at
+# declaw-sdk-issues/04_evil_com_tcp_reaches.py.)
+@check("1. Network policy — evil.com blocked (L7), api.openai.com reachable")
 def c1():
     block_script = textwrap.dedent("""
-        import socket
-        try:
-            socket.create_connection(("evil.com", 443), timeout=3)
-            print("REACH: evil.com")
-        except OSError:
-            print("BLOCK: evil.com")
+        import ssl, urllib.request, urllib.error
+        ctx = ssl._create_unverified_context()
+        def probe(url):
+            try:
+                urllib.request.urlopen(url, timeout=6, context=ctx).read(100)
+                return "REACHED_200"
+            except urllib.error.HTTPError as e:
+                return f"REACHED_HTTP_{e.code}"
+            except Exception as e:
+                return f"BLOCKED:{type(e).__name__}"
+        print("evil.com", probe("https://evil.com"))
+        print("openai", probe("https://api.openai.com/v1/models"))
     """)
     code, out, _ = _run(block_script, _tight_policy(["api.openai.com"]))
-    return "PASS" if "BLOCK: evil.com" in out else f"FAIL ({out!r})"
+    evil_blocked = "evil.com BLOCKED" in out
+    openai_reached = "openai REACHED" in out
+    return "PASS" if evil_blocked and openai_reached else f"FAIL ({out!r})"
 
 
 # 2. Filesystem isolation
