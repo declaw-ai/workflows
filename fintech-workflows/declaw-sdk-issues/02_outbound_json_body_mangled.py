@@ -8,15 +8,37 @@ EXPECTED: When the proxy redacts a PII match inside a
 
 OBSERVED: OpenAI returns `400 Bad Request` — "We could not parse the
           JSON body of your request. (HINT: This likely means you
-          aren't using your HTTP library correctly...)". The redaction
-          is byte-level over the raw request body rather than JSON-value
-          aware, so the replacement produces malformed JSON whenever a
-          match touches a JSON special character or when
-          `Content-Length` isn't updated.
+          aren't using your HTTP library correctly...)".
 
-WORKAROUND: None reliable. Documented in SECURITY.md as a known failure
-            mode; affected workflows fall back to treating the call as
-            blocked.
+TRIGGER: Person_name redaction, specifically. Diagnosed 2026-04-16:
+
+   Probe                                       Person_name triggered?  Status
+   --------------------------------------------------------------------
+   A. "Patient email is jordan@example.com
+       and SSN is 123-45-6789."                 no                     200
+   B. "ssn=123-45-6789 name=Aarav Sharma"       yes  (Aarav Sharma)    400
+   C. "name=Aarav Sharma"                       yes                    400
+   D. "email=alice@example.com"                 no                     200
+
+   So the body mangle is caused by the `person_name` substitution
+   (`Aarav Sharma` → `[REDACTED_PERSON_N]`), not email or SSN redaction.
+
+WHY HEALTH-TECH WORKFLOWS DIDN'T HIT THIS: Their payloads carry names
+   inside JSON keys (e.g. {"patient_name": "..."} inside a state dict)
+   more than as free-text values in chat content, and ambiguous names
+   ("jordan", "Patient") don't score as person_name in the ML
+   classifier. The fintech workflows trip it because clean first+last
+   names like "Aarav Sharma" / "Priya Iyer" in user-visible message
+   strings score cleanly.
+
+LIKELY MECHANISM: `[REDACTED_PERSON_N]` (≈20 chars) is longer than
+                  `Aarav Sharma` (12 chars). If the proxy redacts bytes
+                  in place without updating Content-Length, the server
+                  reads past end-of-body → JSON parse fails.
+
+WORKAROUND: None reliable. Avoid placing raw person names in user
+            message strings (keep them in structured keys), or pre-redact
+            names in the agent before the sandbox boundary.
 
 FIX (server-side): Parse the request body as JSON when Content-Type
                    permits, walk string values, run the PII regex
