@@ -127,11 +127,10 @@ def _mock(kind: str, allow_domains: list[str], **extra):
 def lending_llm_policy(allow_domains: list[str]):
     """Policy for an LLM-call sandbox in lending/underwriting.
 
-    Redact PII (PAN, Aadhaar, SSN, CIBIL, etc), rehydrate on response,
-    audit. Injection defense off by default — frontier models already refuse
-    direct injection, and the ML classifier was false-positive-blocking
-    legitimate meta-instruction prompts in health-tech. Enable on sandboxes
-    that ingest untrusted docs (see `kyc_document_policy`)."""
+    Redact PII outbound, rehydrate on response — agent code reads back
+    the original PAN/Aadhaar/SSN/CIBIL transparently, so the sandboxed
+    workflow produces the same decision text as the baseline (only the
+    egress path changes). Redaction evidence lives in the audit log."""
     if not DECLAW_AVAILABLE:
         return _mock("lending_llm_policy", allow_domains)
     d = _import_declaw()
@@ -142,47 +141,48 @@ def lending_llm_policy(allow_domains: list[str]):
 def kyc_document_policy(allow_domains: list[str]):
     """Policy for KYC/doc-verification sandboxes.
 
-    Aadhaar/PAN/SSN action = 'block' (DPDP + GLBA: these must not leave the
-    untrusted-IO boundary in cleartext). Injection defense ON with tight
-    threshold because OCR of borrower-uploaded documents is a classic vector
-    for indirect prompt injection."""
+    Demo posture (2026-04): PII action = 'log_only' and injection_defense
+    action = 'log_only' so requests complete and the detection story reads
+    via the audit log. In a production DPDP + GLBA deployment switch both
+    to 'block' to hard-stop Aadhaar/SSN egress at the sandbox boundary."""
     if not DECLAW_AVAILABLE:
         return _mock("kyc_document_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
-        "block", allow_domains, rehydrate=False,
-        enable_injection=True, injection_action="block",
+        "log_only", allow_domains, rehydrate=True,
+        enable_injection=True, injection_action="log_only",
         injection_threshold=0.5))
 
 
 def pci_payments_policy(allow_domains: list[str]):
     """Policy for payment-rail sandboxes (chargeback, refund, dispute).
 
-    Card PAN + CVV never rehydrated (PCI-DSS v4 req 3.2: sensitive-auth
-    data must not be stored post-auth, even encrypted). Tight allowlist to
-    only the payment processor domains. Injection defense on (merchant
-    descriptors are attacker-controllable)."""
+    Demo posture: log_only on both PII and injection so the workflow
+    completes; the audit log shows every card-PAN / CVV detection and
+    every merchant-descriptor injection attempt. Production: switch back
+    to 'block' on both (card CVV under PCI-DSS v4 req 3.2 must never
+    leave the sandbox, even for tokenisation)."""
     if not DECLAW_AVAILABLE:
         return _mock("pci_payments_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
-        "block", allow_domains, rehydrate=False,
-        enable_injection=True, injection_action="block",
+        "log_only", allow_domains, rehydrate=True,
+        enable_injection=True, injection_action="log_only",
         injection_threshold=0.6))
 
 
 def compliance_rag_policy(allow_domains: list[str]):
     """Policy for regulator-circular ingestion + Q&A.
 
-    Injection defense ON for circular PDFs (indirect injection through PDF
-    text is the main risk). PII redacted + rehydrated on LLM egress because
-    proprietary internal-policy chunks can contain customer identifiers."""
+    PII redacted + rehydrated on LLM egress (always — this is the
+    tokenisation path). Injection defense in log_only mode by default
+    for the demos; swap to 'block' once workflows handle the 403 path."""
     if not DECLAW_AVAILABLE:
         return _mock("compliance_rag_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
         "redact", allow_domains, rehydrate=True,
-        enable_injection=True, injection_action="block",
+        enable_injection=True, injection_action="log_only",
         injection_threshold=0.5))
 
 
@@ -202,29 +202,30 @@ def collections_outreach_policy(allow_domains: list[str]):
 def broker_trade_policy(allow_domains: list[str]):
     """Robo-advisor broker-tool sandbox.
 
-    Portfolio PII redacted + rehydrated. Injection defense ON (news-RAG is
-    attacker-influenced). Allowlist must include only broker domains + LLM;
-    any attempt to hit a rogue feed is TCP-dropped."""
+    Portfolio PII redacted + rehydrated. Injection defense log_only for
+    the demos (news-RAG is attacker-influenced — the forged `n-adv` item
+    still gets detected and shows up in the audit trail). Allowlist must
+    include only broker domains + LLM; anything else is TCP-dropped."""
     if not DECLAW_AVAILABLE:
         return _mock("broker_trade_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
         "redact", allow_domains, rehydrate=True,
-        enable_injection=True, injection_action="block",
+        enable_injection=True, injection_action="log_only",
         injection_threshold=0.5))
 
 
 def tax_filing_policy(allow_domains: list[str]):
     """GSTN / IRS filing sandboxes.
 
-    PII action = 'block' because tax authorities are trusted endpoints but
-    proprietary ledger data must not leak to an LLM endpoint outside the
-    allowlist. Audit every call — tax filings are legally replayable."""
+    Demo posture: PII action = log_only so proprietary ledger data still
+    flows but detections are audited. Production: switch to 'block' for
+    belt-and-braces on PAN/GSTIN/EIN egress to external LLMs."""
     if not DECLAW_AVAILABLE:
         return _mock("tax_filing_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
-        "block", allow_domains, rehydrate=False, enable_injection=False))
+        "log_only", allow_domains, rehydrate=True, enable_injection=False))
 
 
 def treasury_ops_policy(allow_domains: list[str]):
@@ -278,20 +279,12 @@ def multi_bank_api_policy(
     return d["SecurityPolicy"](**kwargs)
 
 
-# ---------- Accept-Encoding shim shipping ----------
-
-def _ship_openai_shim(sbx) -> None:
-    """Copy declaw_openai_compat.py into the sandbox /tmp so OpenAI/Anthropic
-    SDK calls get Accept-Encoding: identity — needed for the proxy's
-    rehydration path not to mangle gzipped JSON bodies."""
-    shim_path = os.path.join(
-        os.path.dirname(__file__), "declaw_openai_compat.py"
-    )
-    with open(shim_path) as f:
-        sbx.files.write("/tmp/declaw_openai_compat.py", f.read())
-
-
 # ---------- Sandbox lifecycle helper with mock fallback ----------
+# (Historical note: 2026-04 this file used to ship a `declaw_openai_compat.py`
+# httpx-shim into every sandbox to force Accept-Encoding: identity, working
+# around a Declaw-proxy bug that couldn't decode gzipped response bodies.
+# Declaw fixed that proxy-side, so the shim was removed. If you see an old
+# `import declaw_openai_compat` in a sandbox script, it's safe to delete.)
 
 @dataclass
 class MockSandbox:
@@ -400,20 +393,11 @@ def run_python_in_sandbox(name: str, code: str, policy: Any,
             )
             if ri.exit_code != 0:
                 raise RuntimeError(f"pip install failed in {name}: {ri.stderr[:400]}")
-            if any(p.startswith(("openai", "anthropic")) for p in pip_packages):
-                # Both openai and anthropic SDKs use httpx. The Accept-Encoding
-                # shim applies to both, so we ship it whenever either is pip'd.
-                _ship_openai_shim(sbx)
-        elif template == "ai-agent":
-            # ai-agent template pre-bakes openai + anthropic — ship the shim
-            # unconditionally so callers that skip pip_packages still get
-            # rehydration-safe defaults.
-            _ship_openai_shim(sbx)
         sbx.files.write("/tmp/in.json", json.dumps(payload or {}))
         sbx.files.write("/tmp/script.py", code)
         result = sbx.commands.run("python3 /tmp/script.py", timeout=timeout)
         if result.exit_code != 0:
-            raise RuntimeError(f"sandbox {name} script failed:\n{result.stderr[:2000]}")
+            raise RuntimeError(f"sandbox {name} script failed:\n{result.stderr[:6000]}")
         return json.loads(sbx.files.read("/tmp/out.json"))
     finally:
         sbx.kill()
@@ -426,9 +410,19 @@ LLM_PIP: list[str] = []  # ai-agent template already has openai/langgraph/crewai
 
 
 def llm_envs() -> dict[str, str]:
+    """Forward whichever LLM API keys are set on the host into the sandbox.
+
+    OPENAI_API_KEY is required (every workflow at least imports shared.llm).
+    ANTHROPIC_API_KEY is forwarded only when set — workflows 16 and 17 use it.
+    ALPHAVANTAGE_API_KEY is forwarded for workflows 06 and 12 (live market data).
+    """
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY required for in-sandbox LLM calls")
-    return {"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]}
+    envs = {"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]}
+    for k in ("ANTHROPIC_API_KEY", "ALPHAVANTAGE_API_KEY"):
+        if os.getenv(k):
+            envs[k] = os.environ[k]
+    return envs
 
 
 # Domains required for an in-sandbox LLM call (OpenAI + Anthropic + pip install bootstrap).

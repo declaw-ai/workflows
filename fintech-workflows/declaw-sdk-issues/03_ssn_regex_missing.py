@@ -66,14 +66,7 @@ HTTPBIN_PROBE = textwrap.dedent("""
 """)
 
 
-# Ship the Accept-Encoding shim inline so we see the MODEL-visible string.
 PROBE = textwrap.dedent("""
-    import sys
-    sys.path.insert(0, "/tmp")
-    try:
-        import declaw_openai_compat  # noqa
-    except Exception:
-        pass
     from openai import OpenAI
     msg = ("Echo bot. Repeat verbatim between markers. "
            "<<<ssn=123-45-6789 email=alice@example.com name=Alice Smith>>>")
@@ -86,19 +79,6 @@ PROBE = textwrap.dedent("""
 """)
 
 
-SHIM = textwrap.dedent("""
-    import httpx
-    _s = httpx.Client.__init__; _a = httpx.AsyncClient.__init__
-    def _inj(h):
-        hd = httpx.Headers(h) if h is not None else httpx.Headers()
-        if not any(k.lower()=="accept-encoding" for k in hd.keys()):
-            hd["Accept-Encoding"] = "identity"
-        return hd
-    httpx.Client.__init__ = lambda self,*a,**kw: _s(self,*a,**{**kw,"headers":_inj(kw.get("headers"))})
-    httpx.AsyncClient.__init__ = lambda self,*a,**kw: _a(self,*a,**{**kw,"headers":_inj(kw.get("headers"))})
-""")
-
-
 def run_openai() -> tuple[str, str]:
     sbx = Sandbox.create(
         template="ai-agent", timeout=120,
@@ -107,7 +87,6 @@ def run_openai() -> tuple[str, str]:
         envs={"OPENAI_API_KEY": os.environ["OPENAI_API_KEY"]},
     )
     try:
-        sbx.files.write("/tmp/declaw_openai_compat.py", SHIM)
         sbx.files.write("/tmp/script.py", PROBE)
         r = sbx.commands.run("python3 /tmp/script.py", timeout=90)
         return r.stdout or "", r.stderr or ""

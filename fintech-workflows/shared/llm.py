@@ -15,7 +15,7 @@ import os
 from typing import Any, Iterator
 
 DEFAULT_MODEL = "gpt-4.1"
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5"
+DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _openai_client():

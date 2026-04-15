@@ -48,13 +48,7 @@ class SupportState(TypedDict, total=False):
 # ---------- In-sandbox streaming script ----------
 
 STREAM_REPLY_SCRIPT = textwrap.dedent("""
-    import json, sys
-    # The Accept-Encoding shim was written into /tmp by declaw_helpers
-    sys.path.insert(0, "/tmp")
-    try:
-        import declaw_openai_compat  # noqa: F401
-    except Exception:
-        pass
+    import json
     from openai import OpenAI
 
     with open("/tmp/in.json") as f:

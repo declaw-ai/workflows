@@ -96,12 +96,6 @@ def dpdp_check():
 # ---------- c) GLBA: SSN redacted on LLM egress ----------
 
 GLBA_PROBE = textwrap.dedent("""
-    import sys
-    sys.path.insert(0, "/tmp")
-    try:
-        import declaw_openai_compat  # noqa: F401 -- side-effect-only shim
-    except Exception:
-        pass
     from openai import OpenAI
     msg = ("Echo bot. Repeat verbatim between markers. <<<ssn=123-45-6789 "
            "name=Aarav Sharma>>>")

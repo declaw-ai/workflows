@@ -87,8 +87,8 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Match extracted name against CRM record")
     def name_match(extracted_name: str) -> str:
-        \\"\\"\\"Compare extracted_name to the on-file CRM name. Returns JSON
-        {match: bool, confidence: float, crm_name: str}.\\"\\"\\"
+        \"\"\"Compare extracted_name to the on-file CRM name. Returns JSON
+        {match: bool, confidence: float, crm_name: str}.\"\"\"
         crm = crm_name.upper()
         ext = extracted_name.upper().strip()
         confidence = 1.0 if ext == crm else (0.7 if crm.split()[0] in ext else 0.2)
@@ -97,7 +97,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Screen name against AML/sanctions watchlist")
     def aml_screen(name: str) -> str:
-        \\"\\"\\"Returns JSON {clear: bool, hits: list[str]}.\\"\\"\\"
+        \"\"\"Returns JSON {clear: bool, hits: list[str]}.\"\"\"
         blocklist = ["ACME-SHELLCO", "DELTA-FX-HOUSE"]
         hits = [b for b in blocklist if b in name.upper()]
         return json.dumps({"clear": not hits, "hits": hits})

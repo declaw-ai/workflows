@@ -59,7 +59,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Get current cash positions")
     def get_cash_positions(cid: str) -> str:
-        \\"\\"\\"Return JSON with current account balances (PII fields redacted by policy).\\"\\"\\"
+        \"\"\"Return JSON with current account balances (PII fields redacted by policy).\"\"\"
         return json.dumps({
             "customer_id": cid,
             "bank": statement.get("bank"),
@@ -74,13 +74,13 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Get FBIL reference FX rate")
     def get_fx_rate(pair: str) -> str:
-        \\"\\"\\"Return the pre-fetched FBIL reference rate for the given currency pair.\\"\\"\\"
+        \"\"\"Return the pre-fetched FBIL reference rate for the given currency pair.\"\"\"
         return json.dumps(fx_rate)
 
     @tool("Propose a sweep transfer")
     def propose_sweep(sweep_json: str) -> str:
-        \\"\\"\\"Given JSON {from_currency, to_currency, amount, rationale},
-        record the proposed sweep and return a pending confirmation receipt.\\"\\"\\"
+        \"\"\"Given JSON {from_currency, to_currency, amount, rationale},
+        record the proposed sweep and return a pending confirmation receipt.\"\"\"
         try:
             sweep = json.loads(sweep_json)
         except Exception:

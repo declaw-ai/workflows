@@ -57,7 +57,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Fetch live market quote")
     def market_quote(symbol: str) -> str:
-        \\"\\"\\"Return live price for ticker via Alpha Vantage. Skips if key unset.\\"\\"\\"
+        \"\"\"Return live price for ticker via Alpha Vantage. Skips if key unset.\"\"\"
         key = os.getenv("ALPHAVANTAGE_API_KEY")
         if not key:
             return json.dumps({"symbol": symbol, "error": "ALPHAVANTAGE_API_KEY not set"})
@@ -76,7 +76,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Map ticker to FIGI identifier")
     def figi_lookup(ticker: str) -> str:
-        \\"\\"\\"Return FIGI mapping for a ticker via openFIGI.\\"\\"\\"
+        \"\"\"Return FIGI mapping for a ticker via openFIGI.\"\"\"
         url = "https://api.openfigi.com/v3/mapping"
         payload = json.dumps([{"idType": "TICKER", "idValue": ticker,
                                "exchCode": "US"}]).encode()
@@ -94,7 +94,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Check if an instrument is sanctioned")
     def sanctions_check(name: str) -> str:
-        \\"\\"\\"Return sanction status for an instrument or counterparty.\\"\\"\\"
+        \"\"\"Return sanction status for an instrument or counterparty.\"\"\"
         upper = name.upper()
         for key, info in sanctioned.items():
             if key in upper or upper in key:

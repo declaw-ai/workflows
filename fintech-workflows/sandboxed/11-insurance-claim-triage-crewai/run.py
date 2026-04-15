@@ -59,7 +59,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Classify claim type and severity")
     def classify_claim(narrative: str) -> str:
-        \\"\\"\\"Given FNOL narrative, return JSON {type, severity, keyword_flags}.\\"\\"\\"
+        \"\"\"Given FNOL narrative, return JSON {type, severity, keyword_flags}.\"\"\"
         keywords = []
         nl = narrative.lower()
         if "fraud" in nl or "tamper" in nl:
@@ -77,8 +77,8 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Estimate repair or medical cost")
     def cost_estimate(claim_details_json: str) -> str:
-        \\"\\"\\"Given JSON {claim_id, type, est_amount_inr, est_amount_usd},
-        return JSON {estimate_inr, estimate_usd, within_threshold, threshold_used}.\\"\\"\\"
+        \"\"\"Given JSON {claim_id, type, est_amount_inr, est_amount_usd},
+        return JSON {estimate_inr, estimate_usd, within_threshold, threshold_used}.\"\"\"
         try:
             details = json.loads(claim_details_json)
         except Exception:
@@ -98,7 +98,7 @@ CREWAI_SCRIPT = textwrap.dedent("""
 
     @tool("Run fraud pattern checks")
     def fraud_check(claim_id_str: str) -> str:
-        \\"\\"\\"Return JSON {fraud_score: 0-1, flags: list[str]} for the claim.\\"\\"\\"
+        \"\"\"Return JSON {fraud_score: 0-1, flags: list[str]} for the claim.\"\"\"
         flags = []
         if claim.get("loss_date") == claim.get("reported_date"):
             flags.append("same_day_report")

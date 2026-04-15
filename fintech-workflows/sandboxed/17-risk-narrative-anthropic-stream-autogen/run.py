@@ -33,13 +33,7 @@ from shared.declaw_helpers import (  # noqa: E402
 # The group-chat + streaming-narrative script runs entirely inside one
 # microVM. Keep the payload small — only the data the agents actually need.
 AGENT_SCRIPT = textwrap.dedent("""
-    import asyncio, json, sys
-    sys.path.insert(0, "/tmp")
-    try:
-        import declaw_openai_compat  # noqa: F401
-    except Exception:
-        pass
-
+    import asyncio, json
     from autogen_agentchat.agents import AssistantAgent
     from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
     from autogen_agentchat.teams import RoundRobinGroupChat
@@ -112,7 +106,7 @@ AGENT_SCRIPT = textwrap.dedent("""
         client = AnthropicClient()
         chunks = []
         with client.messages.stream(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5-20251001",
             max_tokens=700,
             system=(
                 "You are a senior compliance officer at a listed "

@@ -40,16 +40,8 @@ def _all_tx() -> list[dict]:
 
 
 AGENT_SCRIPT = textwrap.dedent("""
-    import asyncio, json, sys
-    sys.path.insert(0, "/tmp")
-    try:
-        import declaw_openai_compat  # noqa: F401
-    except Exception:
-        pass
-
-    from llama_index.core.agent.workflow import FunctionAgent
+    import json
     from llama_index.core.tools import FunctionTool
-    from llama_index.llms.anthropic import Anthropic as LlamaAnthropic
     from anthropic import Anthropic as AnthropicClient
 
     with open("/tmp/in.json") as f:
@@ -60,13 +52,16 @@ AGENT_SCRIPT = textwrap.dedent("""
     HINT = inp["hint"]
     CUSTOMER_ID = inp["customer_id"]
 
-    def fetch_transaction(rrn_or_pan_last4: str) -> dict:
-        \"\"\"Find a tx by rrn or pan_last4 substring.\"\"\"
+    def fetch_transaction(hint):
+        \"\"\"Find a tx matching any identifier substring (rrn, pan_last4,
+        merchant, vpa_to/from, description).\"\"\"
+        needle = hint.lower()
+        fields = ("rrn", "pan_last4", "merchant", "vpa_to", "vpa_from", "description")
         for t in ALL_TX:
-            if rrn_or_pan_last4 in str(t.get("rrn", "")) or \
-               rrn_or_pan_last4 in str(t.get("pan_last4", "")):
-                return t
-        return {"error": f"no match for {rrn_or_pan_last4}"}
+            for key in fields:
+                if needle in str(t.get(key, "")).lower():
+                    return t
+        return {"error": f"no match for {hint}"}
 
     def fetch_customer(customer_id: str) -> dict:
         return CUSTOMERS.get(customer_id, {"error": "no such customer"})
@@ -93,7 +88,7 @@ AGENT_SCRIPT = textwrap.dedent("""
         \"\"\"Claude non-streaming narrative generator.\"\"\"
         client = AnthropicClient()
         msg = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5-20251001",
             max_tokens=500,
             system=("You are a customer-facing fraud-operations specialist. "
                     "Produce a concise, defensible explanation letter (4-6 "
@@ -107,31 +102,38 @@ AGENT_SCRIPT = textwrap.dedent("""
         )
         return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
-    async def main():
-        agent = FunctionAgent(
-            tools=[
-                FunctionTool.from_defaults(fn=fetch_transaction),
-                FunctionTool.from_defaults(fn=fetch_customer),
-                FunctionTool.from_defaults(fn=score_features),
-                FunctionTool.from_defaults(fn=lookup_policy),
-                FunctionTool.from_defaults(fn=draft_customer_letter),
-            ],
-            llm=LlamaAnthropic(model="claude-sonnet-4-5", max_tokens=800),
-            system_prompt=(
-                "You are a fraud-ops explainer. Workflow: fetch_transaction -> "
-                "fetch_customer -> score_features -> lookup_policy (choose one "
-                "of RBI-2025-DL-01, FATF-REC-10, FATF-REC-20, PCI-DSS-3.2) -> "
-                "draft_customer_letter. Return the final letter verbatim."
-            ),
-        )
-        resp = await agent.run(
-            user_msg=f"Transaction blocked. Hint customer_id='{CUSTOMER_ID}' "
-                     f"descriptor='{HINT}'. Produce an explanation letter."
-        )
-        with open("/tmp/out.json", "w") as f:
-            json.dump({"letter": str(resp)}, f)
+    # Deterministic pipeline (same shape as the baseline). Each step is a
+    # FunctionTool — kept for API-surface parity — but called directly
+    # instead of through FunctionAgent's tool-calling loop.
+    TOOLS = {
+        "fetch_transaction":     FunctionTool.from_defaults(fn=fetch_transaction),
+        "fetch_customer":        FunctionTool.from_defaults(fn=fetch_customer),
+        "score_features":        FunctionTool.from_defaults(fn=score_features),
+        "lookup_policy":         FunctionTool.from_defaults(fn=lookup_policy),
+        "draft_customer_letter": FunctionTool.from_defaults(fn=draft_customer_letter),
+    }
 
-    asyncio.run(main())
+    def choose_policy_id(features, transaction):
+        if transaction.get("cross_border_flag") or features.get("cross_border_flag"):
+            return "FATF-REC-10"
+        if features.get("amount_z_score", 0) >= 3.0:
+            return "RBI-2025-DL-01"
+        if str(transaction.get("rrn", "")).startswith("41"):
+            return "RBI-2025-DL-01"
+        return "PCI-DSS-3.2"
+
+    tx = TOOLS["fetch_transaction"].fn(HINT)
+    if "error" in tx:
+        letter = f"(no transaction matched hint={HINT!r})"
+    else:
+        cust = TOOLS["fetch_customer"].fn(CUSTOMER_ID)
+        features = TOOLS["score_features"].fn(tx, cust)
+        pid = choose_policy_id(features, tx)
+        policy = TOOLS["lookup_policy"].fn(pid)
+        letter = TOOLS["draft_customer_letter"].fn(
+            tx, cust, features, policy.get("excerpt", ""))
+    with open("/tmp/out.json", "w") as f:
+        json.dump({"letter": letter}, f)
 """)
 
 
@@ -163,7 +165,11 @@ def main() -> None:
         out = run_python_in_sandbox(
             "fraud-explain", AGENT_SCRIPT, pol,
             payload={**payload_common, "customer_id": cid, "hint": hint},
-            envs=llm_envs(), timeout=240,
+            # anthropic SDK + llama-index-core are both pre-baked in the
+            # ai-agent template. We refactored away from FunctionAgent's
+            # tool-calling loop (it was looping past any iteration cap), so
+            # we no longer need llama-index-llms-anthropic at all.
+            envs=llm_envs(), timeout=180,
         )
         print("--- Letter ---")
         print(out.get("letter", "(no letter returned)"))
