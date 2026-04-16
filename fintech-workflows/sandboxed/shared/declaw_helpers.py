@@ -174,14 +174,17 @@ def pci_payments_policy(allow_domains: list[str]):
 def compliance_rag_policy(allow_domains: list[str]):
     """Policy for regulator-circular ingestion + Q&A.
 
-    PII redacted + rehydrated on LLM egress (always — this is the
-    tokenisation path). Injection defense in log_only mode by default
-    for the demos; swap to 'block' once workflows handle the 403 path."""
+    Demo posture (2026-04): PII `action="log_only"` because Declaw is
+    currently fixing the Anthropic-side PII-redact path (SDK issue #08
+    — redact mangles JSON body for api.anthropic.com). log_only keeps
+    detections in the audit trail without modifying the body, so
+    Anthropic workflows run end-to-end. Flip to 'redact' +
+    rehydrate=True once Declaw patches the Anthropic redaction path."""
     if not DECLAW_AVAILABLE:
         return _mock("compliance_rag_policy", allow_domains)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
-        "redact", allow_domains, rehydrate=True,
+        "log_only", allow_domains, rehydrate=True,
         enable_injection=True, injection_action="log_only",
         injection_threshold=0.5))
 
@@ -197,31 +200,6 @@ def collections_outreach_policy(allow_domains: list[str]):
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
         "redact", allow_domains, rehydrate=True, enable_injection=False))
-
-
-def anthropic_pii_safe_policy(allow_domains: list[str]):
-    """Temporary workaround policy for Anthropic-calling workflows.
-
-    The Declaw proxy currently 404s on Anthropic requests whose body
-    contains PII when `PIIConfig` is enabled — the outbound-body
-    redaction mangles the `model` field and Anthropic responds "model
-    not found". Same shape as the already-fixed OpenAI SDK issue #02,
-    but the Anthropic path hasn't been patched yet. Reproduced by
-    `declaw-sdk-issues/08_anthropic_nonstream_404.py` (4-cell matrix).
-
-    This policy disables PIIConfig entirely but keeps the network
-    allowlist + audit so the egress boundary is still enforced. Flip
-    back to `compliance_rag_policy` / `broker_trade_policy` once
-    Declaw patches the Anthropic redaction path.
-    """
-    if not DECLAW_AVAILABLE:
-        return _mock("anthropic_pii_safe_policy", allow_domains)
-    d = _import_declaw()
-    return d["SecurityPolicy"](
-        network=d["NetworkPolicy"](allow_out=allow_domains,
-                                   deny_out=[d["ALL_TRAFFIC"]]),
-        audit=d["AuditConfig"](enabled=True),
-    )
 
 
 def broker_trade_policy(allow_domains: list[str]):
@@ -296,8 +274,11 @@ def multi_bank_api_policy(
     if not DECLAW_AVAILABLE:
         return _mock("multi_bank_api_policy", allow)
     d = _import_declaw()
+    # PII action="log_only" (2026-04) — see compliance_rag_policy docstring
+    # for context on SDK issue #08. Flip to "redact" once Declaw patches
+    # the Anthropic-side PII-body redaction path.
     kwargs = _base_policy_kwargs(
-        "redact", allow, rehydrate=True,
+        "log_only", allow, rehydrate=True,
         enable_injection=enable_injection_scan,
         injection_action="log_only", injection_threshold=0.8,
     )

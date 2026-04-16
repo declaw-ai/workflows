@@ -24,7 +24,7 @@ from shared.mock_customers import CUSTOMERS  # noqa: E402
 from shared.mock_transactions import card_transactions, upi_transactions  # noqa: E402
 from shared.mock_policies import CIRCULARS  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
-    LLM_DOMAINS, anthropic_pii_safe_policy, llm_envs, run_python_in_sandbox,
+    LLM_DOMAINS, compliance_rag_policy, llm_envs, run_python_in_sandbox,
 )
 
 
@@ -165,24 +165,17 @@ def main() -> None:
     for cid, hint in demos:
         print(f"\n=== Fraud Explainer (sandboxed, Anthropic non-stream) ===")
         print(f"Customer: {cid} — Hint: {hint!r}\n")
-        print("[agent] entering anthropic_pii_safe_policy sandbox "
-              "(network allowlist + audit only — PIIConfig disabled as "
-              "a workaround for Declaw SDK issue #08; Anthropic PII "
-              "redaction path is currently broken and 404s the request)")
-        pol = anthropic_pii_safe_policy(LLM_DOMAINS)
+        print("[agent] entering compliance_rag_policy sandbox (Anthropic "
+              "non-stream — PII in log_only mode while Declaw patches "
+              "the Anthropic-side redaction path; detections still land "
+              "in the audit trail, body flows untouched)")
+        pol = compliance_rag_policy(LLM_DOMAINS)
         out = run_python_in_sandbox(
             "fraud-explain", AGENT_SCRIPT, pol,
             payload={**payload_common, "customer_id": cid, "hint": hint},
-            # ai-agent template's pre-baked anthropic SDK is old enough
-            # to 404 on claude-haiku-4-5-20251001 (host SDK routes it
-            # fine). Pip-upgrade inside the sandbox. llama-index-core is
-            # still pre-baked; we only touch anthropic.
-            pip_packages=["anthropic>=0.68.0"],
-            envs=llm_envs(),
-            # Sandbox lifetime must exceed pip-install command timeout (480s);
-            # otherwise the VM is GC'd mid-install and we get a
-            # declaw-control-plane "VM not found" 404.
-            timeout=600,
+            # anthropic + llama-index-core are both pre-baked in the
+            # ai-agent template — no pip-install needed.
+            envs=llm_envs(), timeout=240,
         )
         print("--- Letter ---")
         print(out.get("letter", "(no letter returned)"))

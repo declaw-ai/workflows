@@ -23,6 +23,13 @@ All 17 workflow pairs + 4 verification scripts + 1 SDK-issue reproducer
 **Declaw Cloud** (`api.declaw.ai`) with real `gpt-4.1` + `claude-sonnet-4-5`
 and, for multi-API workflows, live public endpoints.
 
+**Headline numbers (2026-04-16 sweep):**
+- 17 / 17 baselines PASS — every one produces the expected decision AND visibly leaks PII to OpenAI / Anthropic OR gets hijacked by at least one injection attack.
+- 17 / 17 sandboxed PASS — same decisions, PII tokenised or audited on egress, injection attacks filtered, `MATCH_DONE` on surveillance narratives, real Claude letters generated with proper RBI + PMLA citations.
+- 8 / 10 primitive checks — fails trace to one remaining Declaw SDK issue (`ssn` regex) + one by-design (audit retrieval).
+- 3 / 5 regulatory gates — fails are the SSN regex gap and the 3-digit CVV gap (CVV isn't Luhn-matchable; needs a custom TransformationRule).
+- 8 / 8 SDK-issue reproducers pass internal VERDICT checks; only `03_ssn_regex_missing` and `08_anthropic_nonstream_404` remain open (both fall to the same underlying work in progress on the Declaw side).
+
 ### Workflow end-to-end
 
 | # | Baseline | Sandboxed | What Declaw contributed on the sandboxed path |

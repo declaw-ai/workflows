@@ -16,8 +16,15 @@ OBSERVED: The call succeeds when the request content is PII-free
           `anthropic.NotFoundError: 404 — model: <name>` when the
           request content contains structured JSON with PAN/SSN/
           customer records — i.e., anything Declaw's PII scanner
-          would try to redact. Error reproduces on both
+          would try to inspect. Error reproduces on both
           `messages.create` (non-streaming) and `messages.stream`.
+
+          **And across all `PIIConfig.action` values** — confirmed
+          2026-04-16: `action="redact"`, `action="block"`, and
+          `action="log_only"` all 404 the request. So the mangling
+          happens at the scanning layer, not only on the redact
+          substitution — even log_only (which shouldn't modify the
+          body) still corrupts the request.
 
 So the failing combination is
             (Anthropic)  ×  (PII-heavy JSON body)  ×  (via Declaw proxy)
