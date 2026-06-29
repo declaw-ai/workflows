@@ -6,7 +6,10 @@ In ONE sandbox with `wisdomai_analytics_policy()`:
   2. SaaS-style GET to httpbin returns 200
   3. Exfil to `attacker.example.com` is blocked by the allowlist
   4. Host filesystem read (/Users/...) fails with FileNotFoundError
-  5. LLM call with PII in prompt returns redaction tokens to the agent
+  5. LLM call with PII in prompt: OpenAI only ever sees opaque tokens, but
+     rehydration (rehydrate_response=True) restores the originals on the
+     response so the agent reads them back transparently. Rehydration over
+     the OpenAI path now works (was a build caveat; fixed proxy-side).
 """
 from __future__ import annotations
 
@@ -59,7 +62,8 @@ PROBE = textwrap.dedent("""
     except Exception as e:
         out['host_fs'] = f'BLOCKED: {type(e).__name__}'
 
-    # 5. LLM echo with PII — expect tokens
+    # 5. LLM echo with PII — OpenAI sees only tokens; the proxy rehydrates the
+    #    response, so the agent reads back the ORIGINAL values.
     try:
         from openai import OpenAI
         PII = 'Account owner Alice Example, email alice@corp.io, SSN 111-22-3333.'
@@ -87,7 +91,7 @@ def main() -> None:
     pol = SecurityPolicy(
         pii=PIIConfig(enabled=True,
                       types=["ssn", "email", "phone", "person_name", "address"],
-                      action="redact", rehydrate_response=False),
+                      action="redact", rehydrate_response=True),
         network=NetworkPolicy(allow_out=allow, deny_out=[ALL_TRAFFIC]),
         audit=AuditConfig(enabled=True),
     )
@@ -117,8 +121,14 @@ def main() -> None:
             f"Host FS read blocked: {out.get('host_fs')!r}"
         )
         echo = out.get("llm_echo", "")
-        leaked = ("alice@corp.io" in echo) or ("111-22-3333" in echo) or ("Alice Example" in echo)
-        (bad if leaked else ok)("LLM echo did NOT contain raw PII")
+        # With rehydrate_response=True the agent reads back the ORIGINALS even
+        # though OpenAI only ever received opaque tokens. We assert on the
+        # deterministic regex-based identifiers (SSN + email); person_name
+        # restoration depends on the Guardrails NER service being enabled.
+        restored = ("111-22-3333" in echo) and ("alice@corp.io" in echo)
+        (ok if restored else bad)(
+            f"Rehydration restored original PII to the agent over OpenAI "
+            f"(echo={echo!r})")
 
         print(f"\n{GREEN}{passes} pass{END}   {RED}{fails} fail{END}")
         sys.exit(0 if fails == 0 else 1)

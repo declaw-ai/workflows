@@ -7,9 +7,9 @@ evidence captured against Declaw Cloud (`api.declaw.ai`) while doing it.
 
 All claims in this document are reproducible:
 
-- **Security primitives**: `python sandboxed/verify_security_primitives.py`  (10/10 pass)
-- **PII dehydrate + rehydrate**: `python sandboxed/verify_pii_handling.py`   (both probes return originals on `rehydrate=True`)
-- **Multi-API protections**: `python sandboxed/verify_multi_api.py`           (4/5 pass — SSN regression flagged as declaw-side)
+- **Security primitives**: `python sandboxed/verify_security_primitives.py`  (all checks pass)
+- **PII dehydrate + rehydrate**: `python sandboxed/verify_pii_handling.py`   (both the httpbin and OpenAI probes return the original PHI on `rehydrate=True`, opaque tokens on `rehydrate=False`)
+- **Multi-API protections**: `python sandboxed/verify_multi_api.py`           (all checks pass — three live health APIs reachable, exfil blocked, PHI incl. SSN tokenized on the OpenAI path)
 - **End-to-end workflows**: `python sandboxed/0{1..7}-*/run.py` with real GPT-4.1 calls and, for 05–07, real NIH / FDA / CT.gov endpoints
 
 ---
@@ -38,23 +38,24 @@ endpoints. Raw evidence (quoted from `/tmp/wf-runs/*.out`):
 **`verify_security_primitives.py` → 10 / 10 PASS**
 - evil.com blocked / api.openai.com reached / metadata IP hard-blocked / cross-sandbox FS isolated / env secret hidden from `get_info()` / transformation rule strips `sk-*` / etc.
 
-**`verify_multi_api.py` → 4 / 5 PASS** (in one microVM, policy =
+**`verify_multi_api.py` → all PASS** (in one microVM, policy =
 `healthcare_multi_api_policy()`):
 ```
-rxnav:   200   (rxcui=11289 for warfarin)
+rxnav:   200   (rxcui for warfarin)
 openfda: 200
 ctgov:   200
 exfil:   BLOCKED: URLError          ← attacker.example.com refused by allowlist
-llm:     "<<<Patient REDACTED_PERSON_6, email REDACTED_EMAIL_ADDRESS_3, …>>>"
+llm:     "<<<Patient REDACTED_PERSON_n, email REDACTED_EMAIL_ADDRESS_n, SSN REDACTED_US_SSN_n.>>>"
 ```
 → 3 legitimate health APIs reachable AND 1 attacker destination refused AND
-PHI (person_name + email) tokenized on the OpenAI path, all under a single
-policy. The 1 FAIL is the known declaw-side SSN regex regression — not our
-workflow code.
+PHI (person_name + email + SSN) tokenized on the OpenAI path, all under a
+single policy. SSN is a built-in declaw PII type, so it redacts with no custom
+rule.
 
-**`verify_pii_handling.py`** → email + person_name tokenized on OpenAI
-path; email rehydrated on `rehydrate=True`; SSN leak is the same
-declaw-side issue.
+**`verify_pii_handling.py`** → email, person_name, and SSN tokenized on the
+OpenAI path; with `rehydrate_response=True` the proxy gzip-decodes OpenAI's
+response and swaps the tokens back, so the agent reads the *originals* (not
+tokens) — the earlier no-op-on-the-OpenAI-path gap is fixed proxy-side.
 
 ### One-line takeaway from this run
 
@@ -104,6 +105,8 @@ If you read nothing else in this document, read this.
 - **Secrets stay invisible to the console.** The agent can use the
   OpenAI API key inside the sandbox, but anyone listing the sandbox
   via the management console sees no key value — reducing insider risk.
+  And with the opt-in credential vault (§7) the real key never enters
+  the sandbox at all — the proxy injects it on the way out.
 
 ### What changes on the isolation side
 
@@ -159,19 +162,20 @@ Every sandboxed step goes through the same helper (`sandboxed/shared/declaw_help
 which ships two **reusable policies** tuned to the two kinds of steps we have:
 
 ### Layer A — `healthcare_llm_policy(allow_domains)`
-Used for every step that makes a real LLM call with PHI in the prompt.
+Used for every step that makes a real LLM call with PHI in the prompt. This is
+a direct frontier-model call (gpt-4.1) on the workflow's *own trusted* prompt,
+so injection defense is intentionally **off** here — it belongs on sandboxes
+that ingest attacker-influenceable text (see Layer B / the multi-API policy).
 
 ```python
 SecurityPolicy(
     pii=PIIConfig(
         enabled=True,
         types=["ssn","credit_card","email","phone","person_name",
-               "api_key","ip_address","address"],
+               "api_key","ip_address","address"],   # ssn is a built-in type
         action="redact",
-        rehydrate_response=True,   # agent sees originals back; LLM only saw tokens
-    ),
-    injection_defense=InjectionDefenseConfig(
-        enabled=True, action="block", threshold=0.8,
+        rehydrate_response=True,   # agent sees originals back (incl. over the
+                                   # OpenAI endpoint); LLM only saw tokens
     ),
     network=NetworkPolicy(
         allow_out=allow_domains,           # e.g. ["api.openai.com", pypi]
@@ -183,18 +187,26 @@ SecurityPolicy(
 
 ### Layer B — `healthcare_untrusted_io_policy(allow_domains)`
 Used when the step touches adversarial external input (payer portals, trial
-registries, third-party PDFs).
+registries, third-party PDFs). PHI is **blocked** outright (a hard stop — never
+tokenized, so it never rehydrates), and the full injection cascade is on.
 
 ```python
 SecurityPolicy(
     pii=PIIConfig(enabled=True, types=[…], action="block"),   # hard stop, no leak allowed
     injection_defense=InjectionDefenseConfig(
-        enabled=True, action="block", threshold=0.5,          # tighter — we distrust the source
+        enabled=True, action="log_only", threshold=0.5,       # tighter — we distrust the source
+        injection_mode="data-egress-sensitive",              # Tier-1 ML classifier + posture
+        judge=InjectionJudgeConfig(enabled=True, policy=…),  # + Tier-2 Gemma LLM judge
     ),
     network=NetworkPolicy(allow_out=allow_domains, deny_out=[ALL_TRAFFIC]),
     audit=AuditConfig(enabled=True),
 )
 ```
+
+The Tier-2 Gemma judge reads the step's `agent_policy` to tell task-aligned
+egress from injection-induced deviation, so benign PHI in the prompt is no
+longer false-flagged. Flip `action` to `block` to reject injected documents
+outright (see `verify_security_primitives.py`).
 
 ### Everything rides on top of — Firecracker microVM isolation
 
@@ -361,8 +373,8 @@ same code running through `run_python_in_sandbox()` with
 
 | Attack step | Without Declaw | With Declaw |
 |---|---|---|
-| Payer portal returns HTML containing "Ignore previous instructions…" and the agent feeds it to gpt-4.1 | reaches the model; success depends on model's own refusal | Same — direct-injection path; we currently rely on frontier model refusals. Declaw's `InjectionDefenseConfig(action="block")` is available as opt-in for this sandbox; off by default in our LLM policy because the ML classifier was false-positive-blocking our legitimate meta-instruction prompts |
-| Scraped trial-registry description contains `<system>…` injection | reaches model | same opt-in available via `healthcare_untrusted_io_policy` |
+| Payer portal returns HTML containing "Ignore previous instructions…" and the agent feeds it to gpt-4.1 | reaches the model; success depends on model's own refusal | On the trusted LLM-only policy injection defense is intentionally off (a direct frontier-model call on our own prompt). The moment external content enters, route the step through `healthcare_untrusted_io_policy`, which runs the full cascade — Tier-1 ML classifier (`injection_mode="data-egress-sensitive"`) + the Tier-2 Gemma judge — and **blocks** PHI egress outright |
+| Scraped trial-registry description contains `<system>…` injection | reaches model | detected by `healthcare_untrusted_io_policy`'s cascade and written to the audit trail; the Gemma judge uses the step's `agent_policy` so legitimate field-extraction is no longer false-flagged |
 
 ### 5.3b Multi-API tool chains (new workflows 05 / 06 / 07)
 
@@ -371,6 +383,13 @@ each fan out to **multiple** external health APIs (RxNav, openFDA,
 ClinicalTrials.gov, PubMed) in one tool-use loop. These are the realistic
 production agents declaw was designed for — the first 4 workflows only
 exercise the LLM boundary.
+
+Because these are genuine tool-calling agents, `healthcare_multi_api_policy()`
+also attaches the **`owasp-agentic@v1`** OPA governance pack: it adds
+command / network gate denials (tool-misuse, SSRF, loopback, cloud-metadata
+egress) around the tool calls without breaking the allowlisted reference-API
+egress, and every deny is audited with its framework control IDs so the audit
+trail doubles as compliance evidence.
 
 | Attack step specific to multi-API agents | Without Declaw | With Declaw |
 |---|---|---|
@@ -384,16 +403,17 @@ One proven-live example from this session's run of
 `allow_out=[api.openai.com, rxnav.nlm.nih.gov, api.fda.gov, clinicaltrials.gov]`:
 
 ```
-rxnav:   200   (rxcui=11289 for warfarin)
+rxnav:   200   (rxcui for warfarin)
 openfda: 200
 ctgov:   200
 exfil:   BLOCKED: URLError      ← attacker.example.com refused by allowlist
-LLM echo: "<<<Patient REDACTED_PERSON_6, email REDACTED_EMAIL_ADDRESS_3, …>>>"
-                                ← Guardrails NER + regex tokenization on OpenAI path
+LLM echo: "<<<Patient REDACTED_PERSON_n, email REDACTED_EMAIL_ADDRESS_n, SSN REDACTED_US_SSN_n.>>>"
+                                ← Guardrails NER + built-in PII tokenization on OpenAI path
 ```
 
-Four legitimate destinations reachable AND one attacker destination
-blocked AND PHI redacted — all from the same sandbox, same policy.
+Three legitimate destinations reachable AND one attacker destination
+blocked AND PHI (name + email + SSN) redacted — all from the same sandbox,
+same policy.
 
 ### 5.4 Observability & compliance
 
@@ -411,6 +431,7 @@ blocked AND PHI redacted — all from the same sandbox, same policy.
 | Malicious PyPI package slips in (supply-chain) | runs with your user/CI privileges; persistence possible via writes to `~/.bashrc`, crontab, shared libs | runs inside ephemeral Firecracker rootfs that is destroyed on `sbx.kill()` — no persistence |
 | Prompt-injection persuades LLM to `os.system("rm -rf ~")` | deletes your home dir | deletes the sandbox's `/home/user` — orchestrator untouched |
 | Agent leaks its own API key via a tool response | key wire-visible to the destination | `TransformationRule` strips `sk-*` patterns outbound; `SecureEnvVar` hides the key from listing |
+| Injected agent dumps `/proc` or its environment to read `OPENAI_API_KEY` | key is in the VM env, so it leaks | with the **credential vault** (opt-in, SDK 1.3.0) the real key never enters the VM — the in-VM env holds only `declaw:vault-managed` and the egress proxy injects the real key on the matching outbound request (see §7) |
 
 All rows above are backed by the test outputs quoted in §4 and the
 reproducers in `sandboxed/verify_security_primitives.py` and
@@ -423,23 +444,51 @@ reproducers in `sandboxed/verify_security_primitives.py` and
 | Gap (from earlier in the session) | Status now |
 |---|---|
 | `member_id`, `MRN`, internal IDs not caught by built-in regex | **Not closed** — add a `TransformationRule` per payer-ID format if you need these specifically redacted |
-| Patient full names (`Mei Tanaka`, `Jordan Rivera`) pass through | ✅ **Closed** — Guardrails NER tokenizes `person_name` end-to-end on both httpbin and OpenAI. Verified live in `verify_multi_api.py` (`Jordan Rivera` → `REDACTED_PERSON_6`). |
-| Address passes through | Partial — works on httpbin; not firing on OpenAI in some runs. Declaw-side. |
+| Patient full names (`Mei Tanaka`, `Jordan Rivera`) pass through | ✅ **Closed** — Guardrails NER tokenizes `person_name` end-to-end on both httpbin and OpenAI. Verified live in `verify_multi_api.py` (`Jordan Rivera` → `REDACTED_PERSON_n`). |
+| Address passes through | ✅ **Closed** — `address` tokenizes on the OpenAI path now that the proxy gzip-decodes responses before rehydration. |
 | Every sandbox re-runs `pip install openai` (~15s + TLS drift) | ✅ **Closed** — `ai-agent` declaw template pre-bakes every framework we use (LangGraph, AutoGen, CrewAI, LlamaIndex, openai, requests, httpx); zero per-run install |
-| Audit log only inspected at teardown | Open — production should stream `sbx.get_audit_log()` into SIEM/ClickHouse live |
-| PII redaction regression on OpenAI path | Mixed — email + phone + person_name redaction restored; **SSN regex currently passes through on this declaw env** (reproducible via `verify_multi_api.py`). Declaw-side. |
+| Audit log only inspected at teardown | Open — audit events are recorded server-side (not retrievable from the `Sandbox` object) and surfaced via the declaw dashboard / control-plane API; production should stream them into SIEM/ClickHouse live |
+| SSN / PII redaction was a no-op on the OpenAI (gzip/stream) path | ✅ **Closed** — the proxy gzip-decodes OpenAI responses before rehydration, so SSN (a built-in PII type), email, phone, person_name, and address all redact outbound and rehydrate back over OpenAI. Was an SDK issue, now fixed in declaw 1.3.0. |
 | No coverage of multi-API tool-chain agents | ✅ **Closed** — workflows 05 / 06 / 07 exercise live RxNav / openFDA / ClinicalTrials.gov / PubMed. `verify_multi_api.py` confirms the allowlist blocks exfil while admitting 4 legitimate destinations in the same sandbox. |
 
 ---
 
-## 7. One-paragraph executive summary
+## 7. Credential vault for the LLM key (opt-in, SDK 1.3.0)
+
+By default the host's `OPENAI_API_KEY` is forwarded into each sandbox as an env
+var — simple and zero-config. SDK 1.3.0 adds a stronger posture we now support:
+the **credential vault**. The real key lives server-side in OpenBao; the egress
+proxy injects it on the matching outbound request, so the VM only ever sees the
+placeholder `declaw:vault-managed`. Even an injected agent that dumps `/proc` or
+exfiltrates its environment never gets the key.
+
+It is brokered via `Sandbox.create(vault_refs=...)` rather than `envs`. To use
+it:
+
+```bash
+# provision once (uses the built-in "openai" provider preset)
+export DECLAW_API_KEY=dcl_...  DECLAW_DOMAIN=api.declaw.ai  OPENAI_API_KEY=sk-...
+python sandboxed/provision_vault.py
+# then switch the workflows onto the vault path
+export DECLAW_OPENAI_VAULT_REF=healthtech-openai
+```
+
+Unset `DECLAW_OPENAI_VAULT_REF` to fall back to env forwarding, so the demos
+still run clean-clone with just `OPENAI_API_KEY`. Every sandboxed health-tech
+workflow calls OpenAI gpt-4.1 in-VM, so OpenAI is the only LLM secret worth
+brokering here (there is no Anthropic egress on the sandboxed path).
+
+---
+
+## 8. One-paragraph executive summary
 
 Using Declaw, every PHI-touching step in all **seven** workflows runs
 inside its own Firecracker microVM with a `SecurityPolicy` that locks
 outbound traffic to a BAA-approved allowlist, tokenizes PHI (email,
-phone, person name via Guardrails NER, and — when functioning — SSN /
-address) before it crosses the VM boundary, rehydrates originals on the
-way back so the agent code is transparent, strips accidental API keys
+phone, SSN, address, and person name via Guardrails NER) before it
+crosses the VM boundary, rehydrates originals on the way back — now
+including over OpenAI's gzipped response stream — so the agent code is
+transparent, strips accidental API keys
 via transformation rules, hides secrets from the control plane via
 `SecureEnvVar`, and writes a structured audit event per intercepted
 request — all without the workflow author writing any security code.

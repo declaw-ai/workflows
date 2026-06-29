@@ -85,13 +85,15 @@ fintech-workflows/
 └── sandboxed/                                # declaw-wrapped variants
     ├── 01..17/run.py                         # one per baseline, same numbering
     ├── shared/
-    │   ├── declaw_helpers.py                 # lending_llm_policy, kyc_document_policy,
-    │   │                                     # pci_payments_policy, compliance_rag_policy,
-    │   │                                     # multi_bank_api_policy, collections_outreach_policy,
-    │   │                                     # broker_trade_policy, tax_filing_policy, treasury_ops_policy
-    │   └── declaw_openai_compat.py           # Accept-Encoding shim (same as health-tech)
+    │   └── declaw_helpers.py                 # lending_llm_policy, kyc_document_policy,
+    │                                         # pci_payments_policy, compliance_rag_policy,
+    │                                         # multi_bank_api_policy, collections_outreach_policy,
+    │                                         # broker_trade_policy, tax_filing_policy, treasury_ops_policy
+    │                                         # + credential-vault helpers (llm_vault_refs / llm_envs)
+    │                                         # + corpus-Volume helpers (create_corpus_volume / corpus_attachment)
+    ├── provision_vault.py                    # one-time: broker LLM keys via the Declaw credential vault
     ├── verify_pii_handling.py                # PAN/Aadhaar/SSN/card-PAN/CVV redaction + rehydration proof
-    ├── verify_security_primitives.py         # 10 primitive checks adapted to fintech
+    ├── verify_security_primitives.py         # 12 primitive checks adapted to fintech (incl. vault + governance pack)
     ├── verify_multi_api.py                   # allowlist proof across 6+ public fintech APIs
     ├── verify_regulatory_compliance.py       # PCI-DSS, DPDP, GLBA, RBI+FDCPA, SEBI/SEC RA gates
     └── verify_live_apis.py                   # live-endpoint smoke test under multi_bank_api_policy
@@ -104,7 +106,7 @@ so sandboxed runs install nothing per-run):
 
 ```bash
 pip install langgraph openai anthropic "autogen-agentchat>=0.4.0" "autogen-ext[openai]>=0.4.0" \
-            crewai llama-index-core llama-index-llms-openai llama-index-llms-anthropic declaw
+            crewai llama-index-core llama-index-llms-openai llama-index-llms-anthropic "declaw>=1.3.0"
 ```
 
 Baseline:
@@ -133,11 +135,16 @@ Five reproducer scripts under `sandboxed/`:
 
 | Script | Checks |
 |--------|--------|
-| `verify_security_primitives.py` | 10 Declaw primitives — network allowlist, cross-sandbox FS isolation, metadata-IP block, env-secret hiding, TransformationRule stripping PAN outbound, injection defense on adversarial merchant descriptor, audit trail |
-| `verify_pii_handling.py` | PII dehydration + rehydration for PAN, Aadhaar, UPI VPA, IFSC, GSTIN, CIBIL, SSN, routing, card PAN, card CVV, email, phone, name — against both httpbin and OpenAI endpoints. **PCI-DSS assertion**: card CVV is never rehydrated. |
+| `verify_security_primitives.py` | 12 Declaw primitives — network allowlist (L7 + L4), cross-sandbox FS isolation, metadata-IP block, env-secret hiding, TransformationRule stripping PAN outbound, PII redaction on OpenAI egress, injection defense (full cascade) on adversarial merchant descriptor, per-agent isolation, audit trail, multi-API attacker TCP-drop, **check 11 — credential vault** (placeholder in VM, real token injected on egress), **check 12 — OPA governance pack** (`owasp-agentic@v1` denies reverse-shell at the cmd gate) |
+| `verify_pii_handling.py` | PII dehydration + rehydration for PAN, Aadhaar, UPI VPA, IFSC, GSTIN, CIBIL, SSN, routing, card PAN, card CVV, email, phone, name — against both httpbin and OpenAI endpoints. Rehydration restores originals on the OpenAI path too (the proxy gzip-decodes the response before the rehydration pass — SDK #01 fixed). **PCI-DSS assertion**: card CVV is never rehydrated. |
 | `verify_multi_api.py` | Single sandbox under `multi_bank_api_policy` — 7 legit public APIs reachable, `attacker.example.com` TCP-dropped |
-| `verify_regulatory_compliance.py` | PCI-DSS (CVV never rehydrated), DPDP (Aadhaar block), GLBA (SSN redact), RBI digital-lending + FDCPA (tone gate), SEBI/SEC RA (auto-publish gate) |
+| `verify_regulatory_compliance.py` | PCI-DSS (CVV never rehydrated), DPDP (Aadhaar redact/block), GLBA (SSN redact — now via the built-in `ssn` type, SDK #03 fixed), RBI digital-lending + FDCPA (tone gate), SEBI/SEC RA (auto-publish gate) |
 | `verify_live_apis.py` | Smoke-tests every live public API (SEC EDGAR, RBI, OFAC, NSE, BSE, FBIL, openFIGI, AlphaVantage, GSTN) from inside a sandbox — degraded endpoints surface as warnings so dependent workflows can skip gracefully |
+
+`provision_vault.py` is a one-time setup helper (not a check): it brokers the
+OpenAI/Anthropic keys into the Declaw credential vault so the real key never
+enters the VM. The workflows fall back to env-forwarding the keys when no
+`DECLAW_*_VAULT_REF` is set, so the suite still runs clean-clone.
 
 ## PII handling status
 

@@ -14,9 +14,9 @@ repo, CMMS. Each hop is a separate potential exfil vector:
 | Attack | Without Declaw | With Declaw |
 |--------|----------------|-------------|
 | A compromised "CRM wrapper" tries to POST the whole account list to `attacker.example.com` | succeeds — process has unrestricted egress | iptables DROP — destination not in `wisdomai_analytics_policy()` allowlist |
-| Agent reasons over a poisoned support-ticket body ("Ignore previous instructions…") | LLM may obey | `InjectionDefenseConfig(action="log_only")` audits the detection; network allowlist prevents tool drift even if LLM is persuaded |
+| Agent reasons over a poisoned support-ticket body ("Ignore previous instructions…") | LLM may obey | opt-in `InjectionDefenseConfig(action="log_only", injection_mode="data-egress-sensitive")` runs the Tier-1 ML classifier plus a Tier-2 Gemma judge and audits the detection; network allowlist prevents tool drift even if LLM is persuaded |
 | Leaky join combines an `account_manager_email` into the LLM prompt | email reaches OpenAI in cleartext | tokenized to `REDACTED_EMAIL_ADDRESS_n`; agent rehydrates transparently |
-| Proactive alerting agent runs overnight on a schedule with bundled secrets | any in-process code can `os.getenv("OPENAI_API_KEY")` | `SecureEnvVar` pattern keeps value out of the control plane; microVM rootfs destroyed on exit — no persistence |
+| Proactive alerting agent runs overnight on a schedule with bundled secrets | any in-process code can `os.getenv("OPENAI_API_KEY")` | key brokered via the **credential vault** (opt-in) so the real value never enters the VM, or forwarded as an env var by default; microVM rootfs destroyed on exit — no persistence |
 
 ## What Declaw blocked / isolated / protected — from actual runs
 
@@ -44,8 +44,8 @@ Observed in stdout of `/tmp/di-runs/*.out` this session:
   *How:* `run_python_in_sandbox` boots a fresh VM per step; payload is passed explicitly as `/tmp/in.json`; the VM never sees the rest of the data pipeline.
 
 ### In `sandboxed/02-telemetry-fusion-llamaindex/run.py`
-- ✅ **Scanned for injection**: service-manual text fed to the LLM ran through `InjectionDefenseConfig(action="log_only")`. Any indirect-injection attempt would have been audit-logged without breaking the workflow.
-  *How:* Opt-in injection scanner on the sandbox's security proxy — enabled because untrusted content (manuals / PDFs) is the prime indirect-injection vector.
+- ✅ **Scanned for injection**: service-manual text fed to the LLM ran through `InjectionDefenseConfig(action="log_only", injection_mode="data-egress-sensitive")` with a Tier-2 Gemma judge. Any indirect-injection attempt would have been audit-logged without breaking the workflow.
+  *How:* Opt-in injection cascade on the sandbox's security proxy — Tier-1 ML classifier plus the `data-egress-sensitive` posture and an `InjectionJudgeConfig` LLM judge that tells task-aligned egress from injection-induced deviation. Enabled because untrusted content (manuals / PDFs) is the prime indirect-injection vector.
 
 ---
 
@@ -63,17 +63,22 @@ Observed in stdout of `/tmp/di-runs/*.out` this session:
 ### 02 — Telemetry + Manuals Fusion (LlamaIndex)
 - Single microVM runs the full `FunctionAgent` because LlamaIndex's
   agent loop is tightly coupled to its in-memory state.
-- `InjectionDefenseConfig(enabled=True, action="log_only")` is turned on
-  — service-manual content is untrusted by default; any indirect
-  prompt-injection attempt gets audit-logged.
+- `InjectionDefenseConfig(enabled=True, action="log_only",
+  injection_mode="data-egress-sensitive")` is turned on — service-manual
+  content is untrusted by default. The cascade runs the Tier-1 ML
+  classifier plus a Tier-2 Gemma judge (`InjectionJudgeConfig`) whose
+  policy describes the legitimate analytics task, so benign PII in the
+  prompt is not false-flagged; any indirect prompt-injection attempt gets
+  audit-logged.
 - Network allowlist stops tool drift regardless of what the injected
   prompt tells the LLM to try.
 
 ### 03 — Proactive Alerting (AutoGen)
 - Full `RoundRobinGroupChat` runs inside one microVM.
 - Proactive scheduled agents hold credentials longer than interactive
-  ones; microVM isolation + `get_info()`-hiding of secrets is the main
-  win here.
+  ones; microVM isolation plus brokering the OpenAI key through the
+  credential vault (opt-in, see below) so it never enters the VM is the
+  main win here.
 - The `monitor` agent's tool calls include the `compute_metric` function
   definition; if the agent hallucinates an argument shape, the in-VM
   pydantic validation surfaces a helpful error rather than crashing the
@@ -92,6 +97,26 @@ python sandboxed/verify_wisdomai_pattern.py
 
 Without `DECLAW_API_KEY` the helper falls back to **local mock** mode —
 executes in-process without a real sandbox so you can read the flow.
+
+### Credential vault (opt-in)
+
+By default `OPENAI_API_KEY` is forwarded into the microVM as an env var
+(simple, clean-clone). For a stronger posture, provision the key into the
+declaw credential vault once and switch the workflows onto the vault
+path:
+
+```bash
+python sandboxed/provision_vault.py            # secret "data-intel-openai"
+export DECLAW_OPENAI_VAULT_REF=data-intel-openai
+```
+
+When the ref is set, `declaw_helpers.llm_vault_refs()` passes
+`vault_refs` to `Sandbox.create(...)`; the egress proxy injects the real
+key on the matching outbound OpenAI request, and the in-VM env holds only
+the placeholder `declaw:vault-managed`. An injected agent that dumps
+`/proc` or its environment never gets the key. Unset the ref to return to
+env forwarding. This vertical brokers only the OpenAI key — it is the
+sole high-value secret on the analytics/BI data path.
 
 ## Defense in depth
 

@@ -4,13 +4,17 @@ Five-agent CrewAI sequential pipeline runs inside a single Firecracker sandbox:
   FNOL-Intake -> Claims-Classifier -> Estimator -> Fraud-Checker -> Router
 
 Policy: compliance_rag_policy(LLM_DOMAINS)
-  * PII redacted (PAN, Aadhaar, SSN, insured name) before reaching OpenAI
-  * injection_defense=block, threshold=0.5 — cl-002 narrative injection
-    ("threshold raised to INR 5,00,000") is blocked; Router correctly
-    routes cl-002 to HUMAN_REVIEW instead of AUTO_APPROVED
+  * PII redacted + rehydrated (PAN, Aadhaar, SSN, insured name tokenised
+    outbound and restored on the response — OpenAI only sees [REDACTED_*])
+  * injection scanned with the data-egress-sensitive posture + Tier-2 Gemma
+    judge, threshold=0.5 — cl-002 narrative injection ("threshold raised to
+    INR 5,00,000") is detected + audited (action=log_only); the crew agents
+    are also instructed to ignore embedded threshold changes, so Router
+    correctly routes cl-002 to HUMAN_REVIEW instead of AUTO_APPROVED. The
+    enforcing action=block variant is proven in verify_security_primitives.py.
 
-Demo: cl-002 auto-approves in baseline (injection hit); sandboxed blocks
-the injection and routes cl-002 to HUMAN_REVIEW.
+Demo: cl-002 auto-approves in baseline (injection hit); sandboxed detects +
+audits the injection and routes cl-002 to HUMAN_REVIEW.
 
 (sandboxed — Crew inside microVM)
 """
@@ -230,8 +234,9 @@ def main() -> None:
     print(f"Insured: {CLAIMS[claim_id].get('insured_name')}")
     if claim_id == "cl-002":
         print("[!] Narrative contains injection: 'threshold raised to INR 5,00,000'")
-        print("    compliance_rag_policy: injection_defense=block, threshold=0.5")
-        print("    Injection blocked -> claim routed to HUMAN_REVIEW")
+        print("    compliance_rag_policy: injection scanned (data-egress-sensitive +")
+        print("    Tier-2 judge, log_only, threshold=0.5) — detected + audited")
+        print("    Injection ignored by crew -> claim routed to HUMAN_REVIEW")
     print()
 
     payload = {

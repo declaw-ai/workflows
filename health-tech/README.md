@@ -48,10 +48,11 @@ health-tech/
 │   └── 07-msl-literature-autogen/            # new — live PubMed + FDA label
 └── sandboxed/                                # declaw-wrapped variants
     ├── 01..07/run.py                         # one per baseline
-    ├── shared/declaw_helpers.py              # healthcare_llm_policy, healthcare_multi_api_policy, ...
-    ├── verify_security_primitives.py         # 10 primitive checks
-    ├── verify_pii_handling.py                # dehydrate + rehydrate proof
-    └── verify_multi_api.py                   # multi-API: allowlist + PHI redaction on 5 destinations
+    ├── shared/declaw_helpers.py              # healthcare_llm_policy, healthcare_untrusted_io_policy, healthcare_multi_api_policy, ...
+    ├── provision_vault.py                    # opt-in: broker the OpenAI key via the credential vault
+    ├── verify_security_primitives.py         # primitive checks (network, FS, metadata, env, transforms)
+    ├── verify_pii_handling.py                # dehydrate + rehydrate proof (originals restored over OpenAI)
+    └── verify_multi_api.py                   # multi-API: allowlist + PHI redaction on the OpenAI path
 ```
 
 ## Run
@@ -61,7 +62,7 @@ so sandboxed runs install nothing per-run):
 
 ```bash
 pip install langgraph openai "autogen-agentchat>=0.4.0" "autogen-ext[openai]>=0.4.0" \
-            crewai llama-index-core llama-index-llms-openai declaw
+            crewai llama-index-core llama-index-llms-openai "declaw>=1.3.0"
 ```
 
 Baseline:
@@ -76,15 +77,19 @@ export OPENAI_API_KEY=sk-...  DECLAW_API_KEY=dcl_...  DECLAW_DOMAIN=api.declaw.a
 python sandboxed/05-med-safety-langgraph/run.py
 ```
 
+Optionally broker the OpenAI key via the SDK 1.3.0 credential vault so it never
+enters the VM (provision once, then `export DECLAW_OPENAI_VAULT_REF=...`); unset
+the ref to fall back to env forwarding. See `SANDBOXED.md` for the details.
+
 ## Verification
 
 Three reproducer scripts under `sandboxed/`:
 
 | Script | Checks |
 |--------|--------|
-| `verify_security_primitives.py` | 10 declaw primitives (network allowlist, cross-sandbox FS, metadata-IP, env secrets, transformation rules) |
-| `verify_pii_handling.py` | PII dehydrate + rehydrate on httpbin + OpenAI |
-| `verify_multi_api.py` | live RxNav + openFDA + ctgov reachable AND exfil to `attacker.example.com` blocked AND PHI tokenized on OpenAI path — all in one sandbox |
+| `verify_security_primitives.py` | declaw primitives (network allowlist, cross-sandbox FS, metadata-IP, env secrets, transformation rules) |
+| `verify_pii_handling.py` | PII dehydrate + rehydrate on httpbin + OpenAI — asserts `rehydrate=True` restores the **originals** (not tokens) over OpenAI, `rehydrate=False` yields tokens only |
+| `verify_multi_api.py` | live RxNav + openFDA + ctgov reachable AND exfil to `attacker.example.com` blocked AND PHI (incl. SSN) tokenized on OpenAI path — all in one sandbox |
 
 ## PHI handling status
 

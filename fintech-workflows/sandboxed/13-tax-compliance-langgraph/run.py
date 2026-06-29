@@ -186,13 +186,15 @@ def classify_txns(state: TaxState) -> TaxState:
 
 
 def draft_return(state: TaxState) -> TaxState:
-    """Sandboxed: tax_filing_policy blocks PAN/GSTIN/EIN/SSN before LLM egress."""
+    """Sandboxed: tax_filing_policy redacts PAN/GSTIN/EIN/SSN before LLM egress
+    and rehydrates them on the response; the owasp-agentic@v1 pack guards the
+    filing/ledger tool calls."""
     profile = state["customer_profile"]
     classified = state["classified_txns"]
 
     print("[node draft_return] entering tax_filing_policy sandbox "
-          "(PAN/GSTIN/EIN/SSN action=block — identifiers never reach LLM; "
-          "GL narration withheld — only aggregate totals sent)")
+          "(PAN/GSTIN/EIN/SSN redacted+rehydrated — reach the LLM only as "
+          "[REDACTED_*] tokens; GL narration withheld — only aggregate totals sent)")
 
     # Verify GSTIN via live API before passing to sandbox
     gstn = None
@@ -200,11 +202,12 @@ def draft_return(state: TaxState) -> TaxState:
         gstn = gstn_taxpayer_verify(profile["gstin"])
         print(f"  [gstn_verify] {profile['gstin']} -> {gstn}")
 
-    # Payload: PII fields present so policy can block them; GL narration omitted
-    # (stays inside the outer process, never sent to sandbox)
+    # Payload: PII fields present so the policy redacts them on egress; GL
+    # narration omitted (stays in the outer process, never sent to the sandbox)
     payload = {
         "customer_name": profile.get("name"),
-        # These identifiers will be blocked by tax_filing_policy before LLM egress
+        # These identifiers are redacted by tax_filing_policy before LLM egress
+        # (and rehydrated on the response).
         "pan": profile.get("pan"),
         "gstin": profile.get("gstin"),
         "ein": profile.get("ein"),

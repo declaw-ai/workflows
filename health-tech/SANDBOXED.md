@@ -9,10 +9,12 @@ microVM sandboxes + a security proxy in front of every outbound call).
 | declaw primitive | PHI workflow risk it neutralizes |
 |------------------|----------------------------------|
 | **Firecracker microVM** per sandbox | Untrusted code execution — payer-portal HTML parsers, EDI 837 builders fed by a malicious rule pack, OCR over a faxed referral PDF cannot escape into the host or other patients' charts. |
-| **PII redaction with `rehydrate_response=True`** | LLM endpoint never sees raw `MRN`, `member_id`, `phone`, `email`, or names. Agent code receives the rehydrated response transparently. Lets non-BAA models be used safely for pure transformation tasks. |
-| **`NetworkPolicy(allow_out=…, deny_out=ALL_TRAFFIC)`** | Locks every step to BAA-covered endpoints (Anthropic, payer clearinghouse, FHIR server). One mis-typed URL can't ship PHI to a random domain. The cloud metadata IP `169.254.169.254` is always blocked → no SSRF-based credential exfiltration. |
-| **`InjectionDefenseConfig`** | Indirect prompt injection coming back from a payer portal, a clinical-trial registry, or a faxed referral is scored and blocked before the agent context is poisoned. |
-| **`AuditConfig`** with structured event log | Per-action audit record (operator + agent + data + timestamp) that meets the 2026 HIPAA Security Rule update. |
+| **PII redaction with `rehydrate_response=True`** | LLM endpoint never sees raw `SSN`, `phone`, `email`, names, or addresses. Agent code receives the rehydrated response transparently — including over the OpenAI endpoint, now that the proxy gzip-decodes responses before rehydration. Lets non-BAA models be used safely for pure transformation tasks. |
+| **`NetworkPolicy(allow_out=…, deny_out=ALL_TRAFFIC)`** | Locks every step to BAA-covered endpoints (OpenAI, the public health reference APIs, payer clearinghouse, FHIR server). One mis-typed URL can't ship PHI to a random domain. The cloud metadata IP `169.254.169.254` is always blocked → no SSRF-based credential exfiltration. |
+| **`InjectionDefenseConfig`** (full cascade) | Indirect prompt injection coming back from a payer portal, a clinical-trial registry, or a faxed referral is scanned by the Tier-1 ML classifier (`injection_mode="data-egress-sensitive"`) **and** a Tier-2 Gemma LLM judge that reads the step's task policy, so benign PHI isn't false-flagged. Detections are audited (`log_only`) or blocked. |
+| **Credential vault** (opt-in, SDK 1.3.0) | The LLM API key can be brokered via `vault_refs` instead of forwarded as an env var — the real key never enters the VM (placeholder `declaw:vault-managed`), the egress proxy injects it. An injected agent that reads `/proc` or its environment gets nothing. |
+| **`CustomPolicyConfig(policy_ref="owasp-agentic@v1")`** | The multi-API tool-calling workflows attach the OWASP agentic governance pack: cmd/network gate denials (tool-misuse, SSRF, loopback, cloud-metadata) layered on declaw's non-bypassable floor, each deny audited with its OWASP/MITRE/NIST control IDs. |
+| **`AuditConfig`** with structured event log | Per-action audit record (operator + agent + data + timestamp) that meets the 2026 HIPAA Security Rule update. Events are recorded server-side and surfaced via the declaw dashboard / control-plane API. |
 | **Per-agent sandbox** in multi-agent workflows | A compromised "trial registry searcher" agent cannot read the chart sitting in the "clinician" agent's filesystem — they're separate microVMs. Data only flows through the orchestrator. |
 
 ## What changes in each workflow
@@ -44,12 +46,12 @@ microVM sandboxes + a security proxy in front of every outbound call).
 
 ### 07 — MSL Literature Support (AutoGen, live PubMed + openFDA)
 - Three-agent `RoundRobinGroupChat` — literature → label → writer — ingests untrusted external content (PubMed abstracts, FDA label text).
-- Because the content source is actively adversarial-adjacent, this policy turns **`injection_defense=log_only`** back on. Detections are audited without blocking legit traffic.
-- Declaw benefit: indirect prompt-injection surface gets audit coverage, and the network allowlist means even a successfully-injected LLM can't exfil because the attacker's destination isn't reachable.
+- Because the content source is actively adversarial-adjacent, this policy turns the injection cascade on at **`log_only`** — Tier-1 ML classifier (`injection_mode="data-egress-sensitive"`) + the Tier-2 Gemma judge. Detections are audited without blocking legit traffic.
+- Declaw benefit: indirect prompt-injection surface gets audit coverage, the `owasp-agentic@v1` governance pack adds tool-misuse / SSRF gate denials around the tool calls, and the network allowlist means even a successfully-injected LLM can't exfil because the attacker's destination isn't reachable.
 
 ## Running
 
-Same as the baseline, but install `declaw` and set:
+Same as the baseline, but install `declaw` (pinned to **>=1.3.0**) and set:
 
 ```bash
 export DECLAW_API_KEY=...
@@ -61,6 +63,20 @@ python sandboxed/01-prior-auth-langgraph/run.py
 Without `DECLAW_API_KEY`, each script falls back to `local-mock` mode: it logs
 what would have been sandboxed and runs the step in-process so you can read the
 flow without a live declaw account.
+
+### Optional: broker the LLM key via the credential vault
+
+By default `OPENAI_API_KEY` is forwarded into the sandbox as an env var. To keep
+the real key out of the VM entirely, provision it into the vault once and point
+the workflows at it:
+
+```bash
+python sandboxed/provision_vault.py            # creates the "healthtech-openai" secret
+export DECLAW_OPENAI_VAULT_REF=healthtech-openai
+```
+
+The proxy then injects the key on the matching outbound request; the in-VM env
+holds only `declaw:vault-managed`. Unset the ref to return to env forwarding.
 
 ## Defense-in-depth, not defense-in-substitution
 

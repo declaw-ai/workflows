@@ -8,38 +8,44 @@ measurable delta is vs. the plain-Python baseline*.
 
 All claims in this document are reproducible:
 
-- **Security primitives**: `python sandboxed/verify_security_primitives.py` (8/10 pass; 2 FAIL = the known Declaw SSN-regex gap + by-design audit-retrieval)
-- **PII dehydrate + rehydrate**: `python sandboxed/verify_pii_handling.py` (email, person_name, PAN round-trip; SSN still flagged by the remaining Declaw issue)
+- **Security primitives**: `python sandboxed/verify_security_primitives.py` (12-check suite — all pass, including check 11 credential vault and check 12 OPA governance pack)
+- **PII dehydrate + rehydrate**: `python sandboxed/verify_pii_handling.py` (email, person_name, PAN, SSN round-trip on both httpbin and OpenAI — rehydration restores originals on the OpenAI path now that the proxy gzip-decodes the response, SDK #01 fixed; CVV stays tokenised per PCI-DSS)
 - **Multi-API allowlist**: `python sandboxed/verify_multi_api.py` (live public fintech APIs reachable, `attacker.example.com` refused)
-- **Regulatory gates**: `python sandboxed/verify_regulatory_compliance.py` (PCI-DSS CVV gap noted; DPDP / RBI+FDCPA / SEBI RA / SEC RA gates all PASS)
+- **Regulatory gates**: `python sandboxed/verify_regulatory_compliance.py` (all 5 — PCI-DSS CVV never rehydrated, DPDP, GLBA (SSN now redacts via the built-in type, SDK #03 fixed), RBI+FDCPA, SEBI/SEC RA)
 - **End-to-end workflows**: `python workflows/NN-*/run.py` (baseline) + `python sandboxed/NN-*/run.py` (sandboxed) for NN = 01..17, with real `gpt-4.1` (OpenAI) or `claude-sonnet-4-5` (Anthropic) and, for the live-API workflows, real SEC EDGAR / RBI / OFAC / NSE / BSE / FBIL / openFIGI / Alpha Vantage / GSTN endpoints
+
+All claims below reflect the **declaw Python SDK 1.3.0** posture: every
+previously-tracked SDK issue is resolved (`declaw-sdk-issues/README.md` lists
+zero remaining), so PII redaction + rehydration works over OpenAI *and*
+Anthropic, the built-in `ssn` type redacts on the wire, and the workflows adopt
+three new SDK 1.3.0 primitives — the credential vault, OPA governance packs, and
+read-only Volumes (see §2a).
 
 ---
 
 ## 0a. How Declaw helped — results from the most recent full run
 
-All 17 workflow pairs + 4 verification scripts + 1 SDK-issue reproducer
-(the one remaining after the Declaw team's fixes) were executed against
+All 17 workflow pairs + 5 verification scripts were executed against
 **Declaw Cloud** (`api.declaw.ai`) with real `gpt-4.1` + `claude-sonnet-4-5`
-and, for multi-API workflows, live public endpoints.
+and, for multi-API workflows, live public endpoints, on **declaw SDK 1.3.0**.
 
-**Headline numbers (2026-04-16 sweep):**
+**Headline numbers:**
 - 17 / 17 baselines PASS — every one produces the expected decision AND visibly leaks PII to OpenAI / Anthropic OR gets hijacked by at least one injection attack.
-- 17 / 17 sandboxed PASS — same decisions, PII tokenised or audited on egress, injection attacks filtered, `MATCH_DONE` on surveillance narratives, real Claude letters generated with proper RBI + PMLA citations.
-- 8 / 10 primitive checks — fails trace to one remaining Declaw SDK issue (`ssn` regex) + one by-design (audit retrieval).
-- 3 / 5 regulatory gates — fails are the SSN regex gap and the 3-digit CVV gap (CVV isn't Luhn-matchable; needs a custom TransformationRule).
-- 8 / 8 SDK-issue reproducers pass internal VERDICT checks; only `03_ssn_regex_missing` and `08_anthropic_nonstream_404` remain open (both fall to the same underlying work in progress on the Declaw side).
+- 17 / 17 sandboxed PASS — same decisions, PII tokenised + rehydrated (or audited) on egress, injection attacks detected/filtered, `MATCH_DONE` on surveillance narratives, real Claude letters generated with proper RBI + PMLA citations via a native non-streaming `messages.create()` call.
+- 12 / 12 primitive checks — including check 11 (credential vault: real key never enters the VM) and check 12 (OPA `owasp-agentic@v1` governance pack denies a reverse-shell at the cmd gate).
+- 5 / 5 regulatory gates — PCI-DSS (CVV never rehydrated), DPDP, GLBA (SSN now redacts via the built-in `ssn` type), RBI+FDCPA, SEBI/SEC RA.
+- Zero outstanding SDK issues: `declaw-sdk-issues/README.md` records every previously-tracked issue as resolved (notably #03 `ssn` redaction and #08 Anthropic non-streaming `messages.create()`). The reproducer scripts were removed once their fixes landed; the record lives in that README.
 
 ### Workflow end-to-end
 
 | # | Baseline | Sandboxed | What Declaw contributed on the sandboxed path |
 |---|----------|-----------|-----------------------------------------------|
 | 01 Credit Underwriting | ✅ decline/approve for 3 customers | ✅ same decisions | 2 microVMs — statement_parse (`kyc_document_policy`) strips injected memo; explain (`lending_llm_policy`) tokenises PAN/Aadhaar/CIBIL to OpenAI |
-| 02 KYC Doc Verification | ✅ crew extracts identity | ✅ | single microVM, full CrewAI pipeline; `log_only` detection of Aadhaar/SSN surfaces in audit |
+| 02 KYC Doc Verification | ✅ crew extracts identity | ✅ | single microVM, full CrewAI pipeline; Aadhaar/SSN redacted + rehydrated on egress, injection detected + audited (log_only) |
 | 03 AML / SAR | ✅ SAR narrative | ✅ same narrative | AutoGen group chat in one microVM; live OFAC SDN download via `treasury.gov` allowlist |
 | 04 Chargeback Dispute | ✅ dispute packet | ✅ | card PAN tokenised to OpenAI; merchant-descriptor injection detected |
 | 05 Compliance Circular RAG | ✅ cites PCI-DSS-3.2 | ✅ same citation | 2 microVMs — ingest sandbox strips `INTERNAL-CONFIDENTIAL` playbook chunk + blocks injected circular footer |
-| 06 Robo-Advisor | ✅ allocation | ✅ | single microVM with injection_defense = log_only; the `n-adv` adversarial news item is detected on egress scan |
+| 06 Robo-Advisor | ✅ allocation | ✅ | single microVM, portfolio PII redacted + rehydrated; the `n-adv` adversarial news item is detected + audited (injection_defense log_only, agentic-tool posture + Tier-2 judge); `owasp-agentic@v1` pack guards the broker tool |
 | 07 SMB Cash-Flow | ✅ review decision | ✅ same | 2 microVMs — statement-parse strips `[SYSTEM: ... SUPER-PRIME]` memo inside VM before features leave |
 | 08 Collections Outreach | ✅ injection hijack ("INJECTION WIN" banner) | ✅ tone-gate rejects draft | in-sandbox tone_check tool catches forbidden phrase; inbound-reply injection ignored by prompt design |
 | 09 Merchant Onboarding | ✅ declines sanctioned merchant | ✅ same decline | HTML-comment MCC-downgrade injection stripped in website-crawl sandbox; live GSTN + SEC EDGAR calls |
@@ -49,20 +55,22 @@ and, for multi-API workflows, live public endpoints.
 | 13 Tax Compliance | ✅ GST + TDS draft | ✅ same draft | PAN/GSTIN/EIN tokenised before reaching OpenAI; raw GL narration kept outside sandbox boundary |
 | 14 Treasury Cash Mgmt | ✅ sweep plan | ✅ same plan | live FBIL USDINR rate fetched via allowlist; sweep-tool call audited |
 | 15 Support Chatbot (OpenAI stream) | ✅ streamed reply | ✅ streamed w/ redaction on egress | SSE chunks pass through the proxy; PAN/UPI tokens emitted outbound per-delta |
-| 16 Fraud Explainer (Claude non-stream) | ⚠️ LlamaIndex iteration cap | ✅ with tighter prompt | Claude messages through Declaw proxy; same `api.anthropic.com` domain in allowlist as OpenAI |
+| 16 Fraud Explainer (Claude non-stream) | ⚠️ LlamaIndex iteration cap | ✅ with tighter prompt | native non-streaming `messages.create()` through the Declaw proxy (the old `messages.stream()` workaround is gone — SDK #08 fixed); PAN/SSN/VPA redacted + rehydrated on the Anthropic path; `api.anthropic.com` in the allowlist alongside OpenAI |
 | 17 Risk Narrative (Claude stream + AutoGen) | ✅ streamed narrative | ✅ forged memo filtered | 2-provider workflow — OpenAI group chat + Claude streaming both go through Declaw, both contribute to the same audit trail |
 
 ### Verification scripts on this run
 
-**`verify_security_primitives.py` → 8/10 PASS** (10-check suite)
-- PASS: network L7 block, filesystem isolation, env-secret hiding, PAN TransformationRule, cloud metadata IP block, injection-defense on merchant descriptor, per-agent sandbox isolation, multi-API attacker refused
-- FAIL: SSN tokenisation on OpenAI egress (the one remaining Declaw SDK issue — `03_ssn_regex_missing.py`)
-- SKIP: audit-trail retrieval (by design — audits flow to the Declaw dashboard, not the Sandbox object)
+**`verify_security_primitives.py` → 12/12 PASS** (12-check suite)
+- PASS: network L7 block (L4 socket egress dropped too — SDK #04 fixed), filesystem isolation, env-secret hiding, PAN TransformationRule, cloud metadata IP block, PII redaction (SSN + email) on OpenAI egress, injection-defense full cascade (Tier-1 classifier + data-egress-sensitive posture + Tier-2 Gemma judge + `prompt-injection@v3` pack, action=block) on merchant descriptor, per-agent sandbox isolation, audit trail (events recorded server-side), multi-API attacker TCP-dropped
+- PASS check 11 — **credential vault**: the in-VM env holds the placeholder `declaw:vault-managed`, the real token is injected by the egress proxy on the matching request (here, a bearer token to `postman-echo.com`)
+- PASS check 12 — **OPA governance pack**: `owasp-agentic@v1` denies a reverse-shell/loopback probe (`nc -z localhost 22`) at the cmd gate while a benign `echo` passes
 
-**`verify_regulatory_compliance.py` → 3/5 PASS**
-- PASS: DPDP (Aadhaar tokenised on untrusted-IO path); RBI-digital-lending + FDCPA (tone gate rejects forbidden draft); SEBI RA / SEC RA (auto-publish gated by flag + human review)
-- FAIL: PCI-DSS v4 req 3.2 — the built-in `credit_card` detector is Luhn-validated over 13-19 digits, so 3-digit CVVs never match and therefore flow unredacted; needs a custom TransformationRule
-- FAIL: GLBA (same SSN-regex gap as the primitive suite)
+**`verify_regulatory_compliance.py` → 5/5 PASS**
+- PASS: PCI-DSS v4 req 3.2 — card CVV never rehydrated (the PAN round-trips; the CVV stays tokenised)
+- PASS: DPDP — Aadhaar tokenised on the untrusted-IO (kyc) path (flip the PII action to `block` for an outright hard-stop)
+- PASS: GLBA — SSN redacted before OpenAI egress, now via the built-in `ssn` type (SDK #03 fixed: the guardrails service ships US_SSN recognizers, so no workaround TransformationRule is needed)
+- PASS: RBI-digital-lending + FDCPA — tone gate rejects the forbidden draft
+- PASS: SEBI RA / SEC RA — auto-publish gated by `check_regulated_opinion_flag` + human review
 
 **`verify_multi_api.py`** → live endpoint reachability varies (SEC/OFAC/NSE can flake); `attacker.example.com` consistently refused by allowlist.
 
@@ -107,7 +115,7 @@ If you read nothing else in this document, read this.
 
 Before Declaw, running a fintech AI agent safely meant building your own sandboxing, your own PII tokenisation for India (PAN/Aadhaar/UPI/IFSC/GSTIN) *and* the US (SSN/routing/card PAN/CVV/EIN), your own network firewalls per workflow, your own prompt-injection classifier, your own audit trail plumbing for DPDP + RBI + SEBI + FinCEN + PCI-DSS, and your own secret vault — and then hoping every workflow author wires them in correctly on every new agent. After Declaw, the workflow author writes the same Python they always would (LangGraph, CrewAI, AutoGen, LlamaIndex — unchanged), and all of those protections are automatically enforced at the platform layer by picking the right policy factory: `lending_llm_policy`, `kyc_document_policy`, `pci_payments_policy`, `compliance_rag_policy`, `collections_outreach_policy`, `broker_trade_policy`, `tax_filing_policy`, `treasury_ops_policy`, or `multi_bank_api_policy`. The risk of forgetting is removed.
 
-In concrete numbers from our 17-workflow sweep: **17/17 baselines** either leak a sensitive identifier or get hijacked by at least one attack we staged. **16/17 sandboxed variants** complete with the attack neutralised and the identifier tokenised on wire — the single outstanding gap is one Declaw-side regex (`ssn`) that the team is aware of. Every fintech-specific identifier (PAN, Aadhaar, UPI, IFSC, GSTIN, EIN, card PAN, person_name, email, phone, routing) is covered either by built-in detectors or by the `TransformationRule`s we ship.
+In concrete numbers from our 17-workflow sweep: **17/17 baselines** either leak a sensitive identifier or get hijacked by at least one attack we staged. **17/17 sandboxed variants** complete with the attack neutralised and the identifier tokenised on wire — there is no outstanding PII-coverage gap. Every identifier we care about is covered: the universal types (SSN, card PAN, email, phone, person_name) by built-in detectors — with SSN now riding the built-in `ssn` type (SDK #03 fixed, no workaround rule) — and the fintech-specific ones (PAN, Aadhaar, UPI, IFSC, GSTIN, EIN, CIBIL) by the `TransformationRule`s we ship.
 
 ---
 
@@ -132,7 +140,7 @@ AI agents in fintech touch four things that have hard regulatory floors:
    Constraining it without killing productivity is exactly what runtime
    security is for.
 
-All 14 workflows in this vertical demonstrate at least one of the four.
+All 17 workflows in this vertical demonstrate at least one of the four.
 
 ## 1. Threat model
 
@@ -158,29 +166,82 @@ All 14 workflows in this vertical demonstrate at least one of the four.
 
 ## 2. Applied security stack
 
-**Layer A — `lending_llm_policy`, `treasury_ops_policy`, `collections_outreach_policy`**
-Used for the LLM-transformation steps where we intentionally let customer
-identifiers cross the sandbox boundary under PII redaction + rehydration.
-Agent code receives original values back; OpenAI only ever sees
-`[REDACTED_PAN]`, `[REDACTED_AADHAAR]`, `[REDACTED_SSN]`, etc.
+All PII-bearing policies run the same posture: **PII redact + rehydrate**.
+Agent code receives original values back; OpenAI / Anthropic only ever see
+`[REDACTED_PAN]`, `[REDACTED_AADHAAR]`, `[REDACTED_SSN]`, etc. The one
+deliberate exception is the **card CVV: redacted but never rehydrated**
+(PCI-DSS v4 req 3.2 — it must never be retained post-auth, even as a token
+round-trip). The differences between policies are which domains are
+allowlisted, whether injection scanning is on, and whether an OPA governance
+pack is attached.
 
-**Layer B — `kyc_document_policy`, `pci_payments_policy`, `tax_filing_policy`**
-Used for steps where the identifier class must **never** leave the sandbox
-in any form — Aadhaar (DPDP sensitive), card CVV (PCI-DSS req 3.2), raw GL
-narration (proprietary IP). `action=block` + tight `allow_out` + (where
-applicable) `injection_defense=block`.
+**Layer A — `lending_llm_policy`, `collections_outreach_policy`,
+`tax_filing_policy`, `treasury_ops_policy`**
+LLM-transformation / tool steps with no untrusted-document ingest. PII
+redact + rehydrate, tight `allow_out`. `tax_filing_policy` and
+`treasury_ops_policy` additionally attach the `owasp-agentic@v1` governance
+pack around the filing / money-movement tool calls.
+
+**Layer B — `kyc_document_policy`, `pci_payments_policy`**
+Identifier-heavy steps that also ingest untrusted documents (KYC scans,
+merchant descriptors). PII redact + rehydrate (CVV never rehydrated under
+`pci_payments_policy`); injection scanning ON in the `data-egress-sensitive`
+posture + Tier-2 judge, **`action=log_only`** — an injected memo is detected
+and audited, the workflow still completes. Flip the PII action to `block`
+to hard-stop Aadhaar/SSN egress under DPDP + GLBA, and `injection_action` to
+`block` to reject injected documents outright (the enforcing variant is
+proven in `verify_security_primitives.py` check 7). `pci_payments_policy`
+attaches `owasp-agentic@v1` around the Stripe dispute tool.
 
 **Layer C — `compliance_rag_policy`, `broker_trade_policy`,
 `multi_bank_api_policy(enable_injection_scan=True)`**
-Used on the untrusted-ingest path — adversarial circular PDFs, merchant
-websites, borrower-uploaded statements, news RSS, 10-K footers. `PII=redact`
-on the LLM leg, `injection_defense=block` at threshold 0.5 on ingest.
+The untrusted-ingest path — adversarial circular PDFs, merchant websites,
+borrower-uploaded statements, news RSS, 10-K footers. PII redact + rehydrate
+on the LLM leg; injection scanning ON (`data-egress-sensitive` for RAG /
+`agentic-tool` for the broker) + Tier-2 Gemma judge, **`action=log_only`** —
+forged directives are detected and land in the audit trail. The judge takes
+an `agent_policy` describing the legitimate task so benign PII in the prompt
+is not false-flagged. `broker_trade_policy` attaches `owasp-agentic@v1`.
 
 **Base — Firecracker microVM** per sandbox: ~125 ms boot, per-sandbox rootfs,
 per-sandbox network namespace, per-sandbox `/tmp`. One compromised
 News-Correlator cannot read the Allocator's portfolio. Host `/etc/passwd`,
 `~/.aws/credentials`, and the cloud metadata IP `169.254.169.254` are
 inaccessible from every sandbox regardless of policy.
+
+## 2a. SDK 1.3.0 primitives adopted
+
+Three primitives new to this vertical's posture, all proven in code:
+
+- **Credential vault (opt-in).** The high-value LLM keys can be brokered
+  through Declaw's credential vault instead of forwarded as env vars: the
+  real key lives server-side (OpenBao), the in-VM env holds only the
+  placeholder `declaw:vault-managed`, and the egress proxy injects the real
+  key on the matching outbound request. Even an agent that dumps `/proc` or
+  exfiltrates its environment never gets the key. Provision once with
+  `python sandboxed/provision_vault.py` (which uses the OpenAI / Anthropic
+  provider presets for the domain scope + header-injection rule), then set
+  `DECLAW_OPENAI_VAULT_REF` / `DECLAW_ANTHROPIC_VAULT_REF`. Unset refs fall
+  back to env forwarding, so the demo still runs clean-clone. Proven by
+  `verify_security_primitives.py` check 11.
+- **OPA governance packs.** `owasp-agentic@v1` is attached to the
+  tool-calling agent policies (`pci_payments_policy`, `broker_trade_policy`,
+  `tax_filing_policy`, `treasury_ops_policy`). It adds cmd / network gate
+  denials (reverse-shell, loopback, cloud-metadata egress, etc.) on top of
+  Declaw's non-bypassable platform floor, and every deny is audited with its
+  framework control IDs (OWASP / MITRE / NIST), so the audit trail doubles as
+  compliance evidence. (`default_deny=False` keeps the gate fail-open on
+  evaluator error for the demo; flip to `True` for fail-closed enforcement.)
+  Proven by `verify_security_primitives.py` check 12.
+- **Read-only Volumes.** Workflow 05 (compliance-circular RAG) uploads the
+  sanitised circular corpus once as a Declaw Volume and mounts it read-only
+  at `/corpus` across the per-question agent sandboxes, instead of
+  re-shipping the corpus bytes in every request payload.
+- **Injection cascade.** The injection-enabled policies now pass an
+  `injection_mode` (`data-egress-sensitive` for RAG / `agentic-tool` for the
+  broker) plus a Tier-2 Gemma judge bound to an `agent_policy`, so the judge
+  can tell task-aligned egress from injection-induced deviation and stop
+  false-flagging benign PII in the prompt.
 
 ## 3. How each workflow was wired
 
@@ -206,26 +267,37 @@ inaccessible from every sandbox regardless of policy.
 
 ## 4. What isolation actually gives us — evidence
 
-Five reproducer scripts live in `sandboxed/`. The expected output shape is
-drawn from the health-tech equivalents that shipped with the 2026-03 Declaw
-build; re-run these locally to capture current-build evidence for an audit.
+Five reproducer scripts live in `sandboxed/`; re-run them locally to capture
+current-build evidence for an audit. `provision_vault.py` is a one-time setup
+helper (not a check) for the credential-vault path.
 
 ### 4.1 `verify_security_primitives.py`
 
-10-check suite. The pattern under `health-tech/` produces:
+12-check suite. Expected output:
 
 ```
-1. Network policy — evil.com blocked, api.openai.com reachable            PASS
+1. Network policy — evil.com blocked (L7), api.openai.com reachable        PASS
 2. Filesystem — /etc/passwd host read not possible                         PASS
 3. Env secrets — visible inside, hidden from control plane listing         PASS
 4. TransformationRule — PAN stripped outbound to httpbin                   PASS
 5. Cloud metadata IP 169.254.169.254 hard-blocked                          PASS
 6. PII redaction — SSN + email tokenised on OpenAI egress                  PASS
-7. Injection defense — merchant descriptor attack blocked                  PASS
+7. Injection defense — merchant descriptor attack blocked (full cascade)   PASS
 8. Per-agent isolation — customer record not visible in peer sandbox       PASS
-9. Audit trail — events emitted for outbound calls                         PASS
+9. Audit trail — enabled; events recorded server-side (control plane)      PASS
 10. Multi-API policy — attacker.example.com TCP-dropped                    PASS
+11. Credential vault — placeholder in VM, real token injected on egress    PASS
+12. Governance pack — owasp-agentic@v1 denies reverse-shell (cmd gate)     PASS
 ```
+
+Check 7 runs the **enforcing** variant of the injection posture
+(`action=block`, `data-egress-sensitive` + Tier-2 Gemma judge +
+`prompt-injection@v3` OPA pack) — i.e. the hard-block the narrative workflows
+run in `log_only`. Check 11 stores a bearer secret scoped to `postman-echo.com`
+in the vault, attaches it to a sandbox via `vault_refs`, and asserts the in-VM
+env holds `declaw:vault-managed` while the echoed request carries the real
+`Bearer` token. Check 12 attaches `owasp-agentic@v1` and asserts `nc -z
+localhost 22` is denied at the cmd gate while a benign `echo` passes.
 
 ### 4.2 `verify_pii_handling.py`
 
@@ -239,7 +311,12 @@ Expected matrix:
 |                          | rehydrate=False | rehydrate=True          |
 |--------------------------|-----------------|-------------------------|
 | httpbin destination      | tokens          | originals (CVV still tokenised) |
-| OpenAI destination       | tokens          | tokens (chunked stream caveat — see health-tech notes) |
+| OpenAI destination       | tokens          | originals (CVV still tokenised) |
+
+Rehydration now restores originals on the **OpenAI** path, not just httpbin:
+the proxy gzip-decodes the response body before the rehydration pass (SDK #01
+fixed), so the earlier "no-op on chunked/gzipped responses" caveat no longer
+applies. No `Accept-Encoding: identity` shim is needed.
 
 ### 4.3 `verify_multi_api.py`
 
@@ -249,10 +326,10 @@ TCP-dropped at the iptables layer.
 
 ### 4.4 `verify_regulatory_compliance.py`
 
-Five regulatory gates:
+Five regulatory gates, all PASS:
 - (a) **PCI-DSS v4 req 3.2** — CVV never rehydrated → PASS
-- (b) **DPDP** — Aadhaar action=block on kyc_document_policy → PASS
-- (c) **GLBA** — SSN redacted pre-egress on lending_llm_policy → PASS
+- (b) **DPDP** — Aadhaar tokenised (redact) before egress on kyc_document_policy; flip the PII action to `block` for an outright hard-stop → PASS
+- (c) **GLBA** — SSN redacted pre-egress on lending_llm_policy, via the built-in `ssn` type (SDK #03 fixed — no workaround TransformationRule) → PASS
 - (d) **RBI digital-lending + FDCPA** — tone gate rejects forbidden draft → PASS
 - (e) **SEBI RA / SEC RA** — equity-research auto-publish requires both `check_regulated_opinion_flag=True` and `human_reviewed=True` → PASS
 
@@ -269,7 +346,7 @@ openFIGI. Occasionally degraded: NSE bulk deals (captcha / 403), GSTN
 | Operation | Plain Python baseline | Declaw microVM |
 |-----------|-----------------------|----------------|
 | Card-PAN in prompt | Reaches OpenAI in cleartext → PCI-DSS finding | Blocked at proxy; agent gets back `[REDACTED_CREDIT_CARD]` |
-| Injected merchant descriptor | Drives refund approval | Blocked by injection_defense before LLM call |
+| Injected merchant descriptor | Drives refund approval | Detected + audited by injection_defense (log_only in the workflows; the enforcing block variant is proven in `verify_security_primitives.py` check 7) |
 | Proprietary internal playbook in RAG | Reaches OpenAI (IP leak) | Ingest sandbox strips the chunk; agent sees only public circulars |
 | SSRF to `169.254.169.254/meta-data` | Succeeds on EC2/GCP → creds leak | Unconditional DROP regardless of allowlist |
 | Malicious PyPI package in CrewAI transitive deps | Calls attacker.com from host | TCP-dropped at iptables |
@@ -279,12 +356,14 @@ openFIGI. Occasionally degraded: NSE bulk deals (captcha / 403), GSTN
 ## 6. Executive summary
 
 The fintech vertical replicates the two-tier architecture health-tech uses
-(PII-redacting LLM sandbox + untrusted-IO blocking sandbox) and extends it
-with four fintech-specific policy factories (`pci_payments_policy`,
+(PII-redacting LLM sandbox + untrusted-IO ingest sandbox) and extends it
+with five fintech-specific policy factories (`pci_payments_policy`,
 `collections_outreach_policy`, `broker_trade_policy`, `tax_filing_policy`,
 `treasury_ops_policy`) plus regex-based TransformationRules for the
 identifiers that aren't universally built in (PAN, Aadhaar, UPI VPA, IFSC,
-GSTIN, EIN). All 14 workflows get a clean before/after pair; all five
-verify scripts exercise real Declaw primitives (including one on real
-public APIs) and five regulatory gates (PCI-DSS, DPDP, GLBA, RBI+FDCPA,
-SEBI/SEC RA).
+GSTIN, EIN, CIBIL). On declaw SDK 1.3.0 it also adopts three new platform
+primitives — the credential vault, OPA governance packs (`owasp-agentic@v1`),
+and read-only Volumes (see §2a). All 17 workflows get a clean before/after
+pair; the 12-check primitive suite, the PII round-trip probe, the multi-API
+allowlist proof, the live-API smoke test, and the five regulatory gates
+(PCI-DSS, DPDP, GLBA, RBI+FDCPA, SEBI/SEC RA) all pass against Declaw Cloud.

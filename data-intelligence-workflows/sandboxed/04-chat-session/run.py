@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
 from shared.declaw_helpers import (  # noqa: E402
-    DECLAW_AVAILABLE, llm_envs, wisdomai_analytics_policy,
+    DECLAW_AVAILABLE, llm_envs, llm_vault_refs, wisdomai_analytics_policy,
 )
 
 
@@ -77,12 +77,16 @@ class SandboxedChatSession:
             raise RuntimeError("DECLAW_API_KEY required for this demo")
         from declaw import Sandbox  # type: ignore
         self.session_id = session_id
-        self.sbx = Sandbox.create(
+        create_kwargs = dict(
             template="ai-agent",
             timeout=600,
             security=wisdomai_analytics_policy(),
             envs=llm_envs(),
         )
+        vault_refs = llm_vault_refs()
+        if vault_refs:
+            create_kwargs["vault_refs"] = vault_refs
+        self.sbx = Sandbox.create(**create_kwargs)
         # Seed the VM with empty history + a scratch tag
         self.sbx.files.write("/home/user/history.json", json.dumps([]))
         self.sbx.files.write(
@@ -114,7 +118,7 @@ class SandboxedChatSession:
             return False, f"{type(e).__name__}: {e}"
 
     def close(self) -> None:
-        self.sbx.kill()
+        self.sbx.kill(wait=True)
         print(f"  [session {self.session_id}] sandbox killed")
 
 

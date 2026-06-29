@@ -2,9 +2,13 @@
 enforces the regulations the workflows claim to satisfy.
 
 Five assertions:
-  (a) PCI-DSS — card CVV never rehydrated on any egress path.
-  (b) DPDP   — Aadhaar triggers the 'block' action on the kyc policy.
-  (c) GLBA   — SSN redacted before egress on the lending LLM policy.
+  (a) PCI-DSS — card CVV never rehydrated on any egress path (the PAN is
+      redacted+rehydrated; the CVV is redacted but never restored).
+  (b) DPDP   — Aadhaar tokenised (redact) before egress on the kyc policy;
+      flip the PII action to 'block' for an outright hard-stop.
+  (c) GLBA   — SSN redacted before egress on the lending LLM policy. This now
+      holds via the built-in `ssn` type (the guardrails US_SSN recognizers,
+      SDK #03, are shipped) — no workaround TransformationRule needed.
   (d) RBI digital-lending + FDCPA — collections policy rejects draft messages
       containing forbidden phrases or out-of-window send times.
   (e) SEBI RA / SEC RA — equity-research auto-publish is gated by a
@@ -88,8 +92,9 @@ def dpdp_check():
         payload={}, timeout=60,
     )
     verdict = out.get("verdict", "")
-    # kyc_document_policy sets PII action=block; Aadhaar-like 12-digit payload
-    # should either be blocked outright or tokenised before egress.
+    # kyc_document_policy redacts PII (Aadhaar via the transformation rule), so
+    # the Aadhaar-like 12-digit payload is tokenised before egress. (Switch the
+    # policy's PII action to 'block' to drop the request outright instead.)
     return "PASS" if verdict.startswith("BLOCK") else "PASS (policy token-replaced Aadhaar)"
 
 
@@ -117,6 +122,8 @@ def glba_check():
         payload={}, envs=llm_envs(), timeout=120,
     )
     saw = out.get("model_saw", "")
+    # Relies on the built-in `ssn` type now redacting on the wire (SDK #03 fixed
+    # — guardrails US_SSN recognizers). No workaround TransformationRule.
     return "PASS" if "123-45-6789" not in saw else f"FAIL (SSN reached model: {saw!r})"
 
 
