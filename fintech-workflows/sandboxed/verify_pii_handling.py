@@ -4,7 +4,9 @@ Two probes:
   1. httpbin.org/post — controlled echo. Confirms what the destination
      receives vs. what the agent reads back.
   2. api.openai.com    — real gpt-4.1 asked to echo the input verbatim.
-     Tests rehydration on OpenAI's chunked/compressed response body.
+     Tests rehydration on OpenAI's response body. The proxy now gzip-decodes
+     the response before the rehydration pass (SDK #01 fixed), so rehydration
+     restores originals on the OpenAI path too — not just httpbin.
 
 Fintech-specific fields covered:
   * Indian: PAN, Aadhaar, UPI VPA, IFSC, GSTIN, CIBIL score
@@ -32,7 +34,21 @@ from declaw import (
     PIIConfig,
     Sandbox,
     SecurityPolicy,
+    TransformationRule,
 )
+
+# India-specific identifiers that aren't universally built-in PII types. Mirror
+# of declaw_helpers._fintech_transformation_rules so the probe actually exercises
+# PAN/Aadhaar/UPI/IFSC/GSTIN/EIN/CIBIL redaction on the wire.
+_FINTECH_RULES = [
+    ("pan",     r"[A-Z]{5}[0-9]{4}[A-Z]"),
+    ("aadhaar", r"[2-9][0-9]{3}[\s-]?[0-9]{4}[\s-]?[0-9]{4}"),
+    ("upi_vpa", r"[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}"),
+    ("ifsc",    r"[A-Z]{4}0[A-Z0-9]{6}"),
+    ("gstin",   r"[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]"),
+    ("ein",     r"[0-9]{2}-[0-9]{7}"),
+    ("cibil",   r"CIBIL[:\s]*[3-9][0-9]{2}"),
+]
 
 # Fintech PII probe: a single payload carrying India + US identifiers.
 PROBE_FIELDS = {
@@ -91,6 +107,11 @@ def _policy(allow_domains: list[str], rehydrate: bool) -> SecurityPolicy:
             action="redact",
             rehydrate_response=rehydrate,
         ),
+        transformations=[
+            TransformationRule(direction="outbound", match=pat,
+                               replace=f"[REDACTED_{label.upper()}]")
+            for label, pat in _FINTECH_RULES
+        ],
         network=NetworkPolicy(allow_out=allow_domains, deny_out=[ALL_TRAFFIC]),
         audit=AuditConfig(enabled=True),
     )
@@ -133,8 +154,8 @@ def main() -> None:
     print(_run("openai_norehydrate", OPENAI_PROBE,
                ["api.openai.com"], rehydrate=False))
 
-    print("\n[4] OpenAI destination, rehydrate=True (rehydrated on json; "
-          "OpenAI chunked response may show tokens — see health-tech notes)")
+    print("\n[4] OpenAI destination, rehydrate=True (originals restored — the "
+          "proxy now gzip-decodes the response before rehydration)")
     print(_run("openai_rehydrate", OPENAI_PROBE,
                ["api.openai.com"], rehydrate=True))
 
@@ -145,9 +166,8 @@ def main() -> None:
           "phone/name restored to originals.\n"
           " - card_cvv: must NOT be rehydrated — keeping the token is the "
           "correct PCI-DSS v4 req 3.2 behaviour.\n"
-          " - OpenAI destination: redaction reliable outbound; inbound "
-          "rehydration may be no-op on chunked/gzipped stream (known build "
-          "caveat also present in health-tech).\n")
+          " - OpenAI destination, rehydrate=False: tokens; rehydrate=True: "
+          "originals restored (gzip-decode fix, SDK #01 — no longer a no-op).\n")
 
 
 if __name__ == "__main__":

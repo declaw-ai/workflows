@@ -3,12 +3,17 @@
 Same two-phase flow as the baseline, but both phases execute inside a
 Declaw sandbox under `multi_bank_api_policy(enable_injection_scan=True)`:
   * Phase 1 (OpenAI gpt-4.1 RoundRobinGroupChat) — trader PAN + order-book
-    lines are tokenised before every Chat Completions request.
+    lines are redacted (tokenised) before every Chat Completions request and
+    rehydrated on the response.
   * Phase 2 (Claude Sonnet 4.5 messages.stream) — streaming response is
     chunk-boundary-buffered by the proxy; each streamed delta is scanned
-    for redaction tokens before it reaches the operator screen.
-  * Injection defense is ON at threshold 0.5 — the forged INTERNAL-MEMO
-    news item is dropped before the narrative writer sees it.
+    for redaction tokens before it reaches the operator screen. PII
+    redact+rehydrate now works on the Anthropic path too (SDK #08 fixed).
+  * Injection defense is ON (data-egress-sensitive + Tier-2 judge, log_only
+    at threshold 0.8) — the forged INTERNAL-MEMO news item is detected +
+    audited; the in-sandbox filter also drops it before the narrative writer
+    sees it. (The enforcing action=block variant is proven in
+    verify_security_primitives.py.)
   * Egress allowlist covers OpenAI + Anthropic + the public reference
     APIs Declaw's fintech bundle allows; nothing else.
 """
@@ -46,9 +51,9 @@ AGENT_SCRIPT = textwrap.dedent("""
     NEWS_FEED = inp["news_feed"]
     SANCTIONS = inp["sanctions"]
 
-    # Defense-in-depth: even though injection_defense=block is configured
-    # at the Declaw policy, also strip the known-bad source in-sandbox so
-    # the demo is deterministic regardless of ML classifier threshold.
+    # Defense-in-depth: the Declaw policy scans injection (data-egress-sensitive
+    # + judge, log_only) and audits the forged memo; also strip the known-bad
+    # source in-sandbox so the demo is deterministic regardless of ML threshold.
     NEWS_FEED = [n for n in NEWS_FEED if n.get("source") != "INTERNAL-MEMO-FORGED"]
 
     def _skeleton():
@@ -135,9 +140,9 @@ AGENT_SCRIPT = textwrap.dedent("""
 def main() -> None:
     print("=== Risk Narrative (sandboxed, AutoGen gpt-4.1 + Claude stream) ===")
     print("[agent] entering multi_bank_api_policy sandbox "
-          "(injection_defense=log_only, PII=log_only while Declaw "
-          "patches the Anthropic redaction path; LLM_DOMAINS allowlist "
-          "incl. api.anthropic.com)")
+          "(injection scanned: data-egress-sensitive + judge, log_only; "
+          "PII redact+rehydrate — now works on the Anthropic path too "
+          "(SDK #08 fixed); LLM_DOMAINS allowlist incl. api.anthropic.com)")
     pol = multi_bank_api_policy(enable_injection_scan=True)
     out = run_python_in_sandbox(
         "risk-narrative-stream", AGENT_SCRIPT, pol,

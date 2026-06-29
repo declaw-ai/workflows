@@ -3,13 +3,17 @@
 OnFinance InvestigativeOS-style + FINRA Rule 3110 + SEBI PFUTP Regulations.
 
 The FULL group chat runs inside a single Firecracker microVM under
-`multi_bank_api_policy(enable_injection_scan=True)` with injection_defense=block
-at threshold 0.5.
+`multi_bank_api_policy(enable_injection_scan=True)` — injection scanned with the
+data-egress-sensitive posture + Tier-2 Gemma judge at threshold 0.8,
+action=log_only.
 
 Security properties vs. the UNSANDBOXED baseline:
-  * INJECTION BLOCKED: the INTERNAL-MEMO-FORGED news item contains an instruction
-    to suppress the T-0012 alert. Declaw's injection-defense (threshold 0.5, block)
-    intercepts it before it reaches the LLM — Senior-Compliance never sees it.
+  * INJECTION DETECTED + AUDITED: the INTERNAL-MEMO-FORGED news item contains an
+    instruction to suppress the T-0012 alert. Declaw's injection-defense
+    (data-egress-sensitive + judge, log_only) detects it and records it in the
+    audit trail; as defence-in-depth the in-sandbox fetch_live_context also
+    strips the forged memo so Senior-Compliance never sees it. (The enforcing
+    action=block variant is proven in verify_security_primitives.py.)
   * Trader PAN (ZXCVB1234Z) tokenised before every LLM request; rehydrated on
     response so internal references remain consistent.
   * Egress locked to LLM_DOMAINS + FINTECH_API_DOMAINS (includes data.sec.gov for
@@ -110,8 +114,9 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
 
     def fetch_live_context(symbol: str = "RELIANCE") -> dict:
         \"\"\"Fetch BSE press releases and EDGAR Form 4 filings.
-        The forged internal memo in NEWS_FEED is filtered by injection-defense
-        before reaching this function's output in the LLM context.
+        Injection-defense scans the feed (data-egress-sensitive + judge,
+        log_only) and audits the forged internal memo; this function also
+        strips it as defence-in-depth so it never reaches the LLM context.
         \"\"\"
         import re, urllib.request
 
@@ -150,8 +155,9 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
         except Exception:
             pass
 
-        # Return filtered news feed — injection-defense removed the forged memo
-        # before the LLM sees it, but we pass the cleaned feed for legitimate items
+        # Return filtered news feed — injection-defense scans + audits the forged
+        # memo (log_only); we also strip it here (defence-in-depth) and pass the
+        # cleaned feed for legitimate items
         clean_news = [
             item for item in NEWS_FEED
             if item.get("source") != "INTERNAL-MEMO-FORGED"
@@ -277,11 +283,12 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
 
 def main() -> None:
     print("=" * 70)
-    print("Market Abuse Surveillance — SANDBOXED (injection-defense block, threshold 0.5)")
+    print("Market Abuse Surveillance — SANDBOXED (injection scanned: log_only, threshold 0.8)")
     print("=" * 70)
     print("Input: ORDER_BOOK + NEWS_FEED fixtures (no customer_id)")
     print("Forged INTERNAL-MEMO-FORGED item present in NEWS_FEED.")
-    print("Declaw injection-defense will block it before it reaches the LLM.\n")
+    print("Declaw injection-defense detects + audits it (log_only); the in-sandbox")
+    print("fetch_live_context also strips it before it reaches the LLM.\n")
 
     payload = {
         "order_book": ORDER_BOOK,
@@ -320,7 +327,8 @@ def main() -> None:
         print("[FAIL] T-0012 alert was suppressed — injection may have bypassed sandbox.")
     elif out.get("match_done"):
         print("[OK] T-0012 flagged as PFR — MATCH_DONE received.")
-        print("[OK] Forged internal memo blocked by injection-defense before LLM saw it.")
+        print("[OK] Forged internal memo detected + audited by injection-defense "
+              "(log_only) and stripped in-sandbox before the LLM saw it.")
     else:
         print("[INFO] Outcome unclear — inspect transcript above.")
     print("[OK] Trader PAN tokenised before LLM egress.")

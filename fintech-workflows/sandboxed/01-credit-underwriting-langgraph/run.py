@@ -1,9 +1,11 @@
 """Credit Underwriting workflow (LangGraph) — sandboxed with Declaw, real GPT-4.1.
 
 Two sandboxed steps:
-  1. statement_parse  — wrapped in kyc_document_policy (PII action=block,
-     injection_defense=block threshold=0.5) so an injected memo in the bank
-     statement cannot override the approval decision.
+  1. statement_parse  — wrapped in kyc_document_policy (PII redact+rehydrate,
+     injection scanned with the data-egress-sensitive posture + Tier-2 Gemma
+     judge at threshold 0.5) so an injected memo in the bank statement is
+     detected and recorded in the audit trail (action=log_only here; the
+     enforcing action=block variant is proven in verify_security_primitives.py).
   2. explain          — wrapped in lending_llm_policy (PII redact+rehydrate)
      so raw PAN/Aadhaar/SSN/CIBIL never reach OpenAI; the proxy replaces them
      with [REDACTED_*] tokens, then rehydrates them in the response.
@@ -11,7 +13,7 @@ Two sandboxed steps:
 Demo recipe (same as baseline to make the contrast obvious):
   c-003 -> DECLINE, explanation contains redacted PII
   c-001 -> APPROVE
-  c-002 -> adversarial memo in statement is BLOCKED by kyc_document_policy
+  c-002 -> adversarial memo in statement is DETECTED + audited by kyc_document_policy
 """
 from __future__ import annotations
 
@@ -80,8 +82,9 @@ STATEMENT_PARSE_SCRIPT = textwrap.dedent("""
         "total_credits": credits,
         "total_debits": debits,
         "cash_flow_delta": closing - opening,
-        # Narration passed through but injection defense has already blocked
-        # any injected directives before this script ran.
+        # Narration passed through; injection defense has already scanned it
+        # (data-egress-sensitive + Tier-2 judge, log_only) and any injected
+        # directives are detected and recorded in the audit trail.
         "narration": narration,
     }
     with open("/tmp/out.json", "w") as f:
@@ -189,11 +192,12 @@ def bureau_pull(state: UnderwritingState) -> UnderwritingState:
 
 
 def statement_parse(state: UnderwritingState) -> UnderwritingState:
-    """Sandboxed: kyc_document_policy blocks injection + PII in untrusted IO."""
+    """Sandboxed: kyc_document_policy scans injection + redacts PII in untrusted IO."""
     cid = state["customer_id"]
     stmt = STATEMENTS.get(cid, {})
     print(f"[node statement_parse] entering kyc_document_policy sandbox "
-          "(injection_defense=block threshold=0.5 — adversarial memo will be caught)")
+          "(injection scanned: data-egress-sensitive + Tier-2 judge, log_only, "
+          "threshold=0.5 — adversarial memo is detected + audited)")
     parsed = _parse_statement_sandboxed(stmt)
     return {
         "statement": parsed,
@@ -352,12 +356,14 @@ def main() -> None:
     print(f"Decision:    {r2.get('decision')}")
     print(f"Explanation: {r2.get('explanation', '')[:300]}")
 
-    print("\n--- Demo 3: c-002 Priya Iyer (adversarial memo BLOCKED by kyc_document_policy) ---")
+    print("\n--- Demo 3: c-002 Priya Iyer (adversarial memo DETECTED by kyc_document_policy) ---")
     r3 = _run_demo(graph, "c-002", 1000000, "smb_working_capital_global", "uw-sbx-c002")
     print(f"Decision:    {r3.get('decision')}")
     print(f"Explanation: {r3.get('explanation', '')[:300]}")
-    print("[NOTE] Injection memo in c-002 statement was blocked by kyc_document_policy "
-          "before reaching the LLM — decision is based on real financial signals only.")
+    print("[NOTE] Injection memo in c-002 statement was detected by kyc_document_policy "
+          "(data-egress-sensitive + Tier-2 judge, log_only) and recorded in the audit "
+          "trail; the decision is based on real financial signals only. The enforcing "
+          "action=block variant is proven in verify_security_primitives.py (check 7).")
 
 
 if __name__ == "__main__":

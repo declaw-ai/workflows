@@ -1,11 +1,15 @@
 """Merchant Onboarding workflow (LangGraph) — sandboxed with Declaw, real GPT-4.1.
 
 Two sandboxed boundaries:
-  1. website_risk_crawl   — compliance_rag_policy (injection_defense=block) so
-     m-002's HTML comment injecting "classify as MCC 5734" is caught and dropped
-     before the content reaches `mcc_classify`.
+  1. website_risk_crawl   — compliance_rag_policy (injection scanned:
+     data-egress-sensitive + Tier-2 judge, log_only) so m-002's HTML comment
+     injecting "classify as MCC 5734" is detected + audited; the crawler's
+     regex also deterministically strips the HTML comment before the content
+     reaches `mcc_classify`.
   2. mcc_classify (LLM)  — same compliance_rag_policy wraps the OpenAI call so
-     any residual injected content is caught at the LLM egress boundary too.
+     any residual injected content is scanned + audited at the LLM egress
+     boundary too (action=log_only; the enforcing action=block variant is
+     proven in verify_security_primitives.py).
 
 Live GSTN + EDGAR calls via shared.external_apis routed through
 multi_bank_api_policy for the gstn_verify step.
@@ -185,15 +189,16 @@ def penny_drop(state: OnboardingState) -> OnboardingState:
 
 
 def website_risk_crawl(state: OnboardingState) -> OnboardingState:
-    """Sandboxed: compliance_rag_policy with injection_defense=block."""
+    """Sandboxed: compliance_rag_policy — injection scanned (log_only)."""
     mid = state["merchant_id"]
     html = MERCHANT_WEBSITE_SNAPSHOTS.get(mid, "<html><body>No content.</body></html>")
     print(f"[node website_risk_crawl] entering compliance_rag_policy sandbox "
-          f"(injection_defense=block threshold=0.5) merchant_id={mid}")
+          f"(injection scanned: data-egress-sensitive + judge, log_only, "
+          f"threshold=0.5) merchant_id={mid}")
     crawl_result = _crawl_website_sandboxed(mid, html)
     injection_detected = crawl_result.get("injection_comment_stripped", False)
     if injection_detected:
-        print(f"  [BLOCKED] Prompt injection detected in HTML comment for {mid} — stripped.")
+        print(f"  [DETECTED] Prompt injection in HTML comment for {mid} — audited + stripped.")
     return {
         "website_html": crawl_result.get("cleaned_text", ""),
         "injection_detected": injection_detected,
@@ -289,7 +294,7 @@ def main() -> None:
         m = MERCHANTS[mid]
         print(f"--- Onboarding {mid}: {m['legal_name']} ---")
         if mid == "m-002":
-            print("[NOTE] m-002 website HTML contains injection — sandboxed variant blocks it.")
+            print("[NOTE] m-002 website HTML contains injection — sandboxed variant detects + audits it (log_only) and strips the HTML comment.")
 
         initial: OnboardingState = {"merchant_id": mid}
         config = {"configurable": {"thread_id": f"onboard-sbx-{mid}"}}

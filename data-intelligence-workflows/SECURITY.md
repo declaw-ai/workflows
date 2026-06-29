@@ -30,8 +30,13 @@ All claims are reproducible:
 - **Audit trail per data source.** "Which query hit CRM vs warehouse vs
   tickets last Tuesday?" is answerable from the structured audit log
   without building your own logging layer.
-- **Secrets stay invisible.** The OpenAI API key is usable inside the VM
-  but not returned by the control-plane listing — shrinks insider risk.
+- **Secrets can stay out of the VM entirely.** By default the OpenAI API
+  key is forwarded into the microVM as an env var. Opt into the
+  **credential vault** (`provision_vault.py` + `DECLAW_OPENAI_VAULT_REF`)
+  and the real key lives server-side; the egress proxy injects it on the
+  matching outbound request, so the VM only ever sees the placeholder
+  `declaw:vault-managed` — even an injected agent that dumps its
+  environment never gets the key.
 
 ### Isolation side
 
@@ -88,17 +93,32 @@ Which wires:
 - `NetworkPolicy(allow_out=LLM_DOMAINS + SAAS_STANDIN_DOMAINS + extras,
   deny_out=[ALL_TRAFFIC])`
 - `AuditConfig(enabled=True)`
-- (optional) `InjectionDefenseConfig(enabled=True, action="log_only")`
+- (optional) `InjectionDefenseConfig(enabled=True, action="log_only",
+  injection_mode="data-egress-sensitive")` wrapping a Tier-2 Gemma judge
+  (`InjectionJudgeConfig`)
 
 Every sandbox boots with this policy; every outbound HTTP gets scanned
 for PII and checked against the allowlist before the bytes leave the VM.
+
+**Credential vault (opt-in).** The OpenAI key is forwarded as an env var
+by default. Provision it into the vault (`sandboxed/provision_vault.py`)
+and set `DECLAW_OPENAI_VAULT_REF`, and `llm_vault_refs()` passes
+`vault_refs` to the sandbox so the proxy injects the key on the outbound
+request — the VM only sees `declaw:vault-managed`. Unset the ref to fall
+back to env forwarding.
+
+**Deliberately out of scope here.** This vertical is analytics/BI with no
+money-movement and no external tool calls, so no OPA governance pack
+(e.g. `owasp-agentic`) cleanly fits and none is wired in. The synthetic
+datasets are tiny and regenerated per run, so no Volume is mounted —
+payloads pass inline via `/tmp/in.json`. Both are intentional, not gaps.
 
 ## 3. How each workflow is wired
 
 | Workflow | Sandboxes | Policy variation |
 |----------|-----------|------------------|
 | 01 KPI Q&A | 4 microVMs (warehouse / crm / tickets / advisory-llm) | default policy; injection scan off |
-| 02 Telemetry Fusion | 1 microVM (full FunctionAgent) | **`enable_injection_scan=True`** — manual text is untrusted |
+| 02 Telemetry Fusion | 1 microVM (full FunctionAgent) | **`enable_injection_scan=True`** — `data-egress-sensitive` cascade + Tier-2 Gemma judge; manual text is untrusted |
 | 03 Proactive Alerting | 1 microVM (full group chat) | default policy |
 
 ---
@@ -133,8 +153,11 @@ strings are copy-pasted from actual stdout in `/tmp/di-runs/*.out`.
 
 With `rehydrate_response=True` in `wisdomai_analytics_policy()`, the
 agent code ITSELF sees the original values restored — OpenAI only ever
-saw the tokens. Verified by the test using `rehydrate_response=False`
-to force-show what the destination got.
+saw the tokens. `verify_wisdomai_pattern.py` proves this end to end: it
+runs an echo-bot prompt containing an SSN and email, and asserts the
+agent reads the originals back on the response (rehydration over the
+OpenAI path now works; it was previously a build caveat, fixed
+proxy-side).
 
 ### 3b.4 Isolated per-agent blast radius
 
@@ -144,11 +167,11 @@ to force-show what the destination got.
 | W4 per-user chat session | Separate Firecracker microVMs per session_id | `alice.scratch_path` referenced only her sbx ID (`sbx-5e1bb...`); `bob.scratch_path` referenced only his (`sbx-8b968...`). No path to cross |
 | W3 proactive scheduled agent | Disposable microVM, destroyed on kill | Agent state, cached metrics, tool memory all vanish with `sbx.kill()` — no persistence |
 
-### 3b.5 Hidden secrets from the control plane
+### 3b.5 Keeping the OpenAI key out of the VM
 
 | Risk | Mechanism | Observed benefit |
 |---|---|---|
-| `OPENAI_API_KEY` reachable via `Sandbox.list()` → `get_info()` | `SecureEnvVar` pattern (declaw's `envs=` + `auto_mask_in_audit`) | The agent inside the VM can use the key to call gpt-4.1, but the key value doesn't appear in the control-plane listing of the sandbox |
+| `OPENAI_API_KEY` readable from inside the VM (env, `/proc`, an injected agent) | **Credential vault** (opt-in): `provision_vault.py` stores the key server-side; `Sandbox.create(vault_refs=...)` makes the egress proxy inject it on the outbound OpenAI request | The agent can still call gpt-4.1, but the in-VM env holds only `declaw:vault-managed` — the real key never enters the microVM. Default (no ref set) forwards the key as an env var |
 
 ---
 
@@ -165,11 +188,13 @@ PASS  Warehouse query returned expected row
 PASS  SaaS GET reached (status=200)
 PASS  attacker.example.com blocked: 'BLOCKED: URLError'
 PASS  Host FS read blocked: 'BLOCKED: FileNotFoundError'
-PASS  LLM echo did NOT contain raw PII
+PASS  Rehydration restored original PII to the agent over OpenAI
 ```
 
 The first two prove legitimate data access continues to work; the last
-three prove declaw is the thing making the boundaries real.
+three prove declaw is the thing making the boundaries real. The
+rehydration check asserts the agent reads back the *original* SSN and
+email — OpenAI only ever received the opaque tokens.
 
 ---
 
@@ -182,7 +207,7 @@ three prove declaw is the thing making the boundaries real.
 | `open("/Users/you/.aws/credentials")` | reads the host file | **FileNotFoundError** (VM rootfs) |
 | Embed PII in an LLM prompt | reaches OpenAI in cleartext | **tokenized at proxy**, rehydrated on return |
 | Process crash from bad tool call | kills agent | microVM dies, orchestrator continues |
-| Secret leakage via `get_info()` listing | whole env visible | value is hidden by `SecureEnvVar` pattern |
+| OpenAI key readable from process env | whole env visible | **vault-brokered** (opt-in): real key never enters the VM, only `declaw:vault-managed` |
 | Per-destination audit trail | roll your own logging | structured events per request |
 
 ---

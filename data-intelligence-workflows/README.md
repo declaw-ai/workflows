@@ -2,7 +2,8 @@
 
 Three reference workflows mimicking the agentic-BI patterns shipping in
 products like **WisdomAI**, implemented as **baseline** (in-process) and
-**sandboxed** (declaw Firecracker microVM) pairs.
+**sandboxed** (declaw Firecracker microVM) pairs. Built against the
+**declaw Python SDK 1.3.0**.
 
 Every workflow makes real `gpt-4.1` calls. Data is deterministic synthetic
 (no external APIs needed) so a clean-clone demo runs offline except for
@@ -36,7 +37,8 @@ data-intelligence-workflows/
 │   └── 03-proactive-alert-autogen/run.py
 └── sandboxed/                            # declaw-wrapped
     ├── 01..03/run.py                     # one per baseline
-    ├── shared/declaw_helpers.py          # wisdomai_analytics_policy, run_python_in_sandbox
+    ├── shared/declaw_helpers.py          # wisdomai_analytics_policy, run_python_in_sandbox, vault refs
+    ├── provision_vault.py                # optional: broker OPENAI_API_KEY via the credential vault
     └── verify_wisdomai_pattern.py        # 5-check proof of declaw guarantees
 ```
 
@@ -44,7 +46,7 @@ data-intelligence-workflows/
 
 ```bash
 pip install langgraph openai "autogen-agentchat>=0.4.0" \
-            "autogen-ext[openai]>=0.4.0" llama-index-core llama-index-llms-openai declaw
+            "autogen-ext[openai]>=0.4.0" llama-index-core llama-index-llms-openai "declaw>=1.3.0"
 
 export OPENAI_API_KEY=sk-...
 
@@ -61,6 +63,23 @@ python sandboxed/verify_wisdomai_pattern.py
 
 All three sandboxed variants run on the `ai-agent` declaw template —
 zero per-run pip install.
+
+### Optional: broker the OpenAI key via the credential vault
+
+By default the host's `OPENAI_API_KEY` is forwarded into the microVM as
+an env var. To keep the real key out of the VM entirely, provision it
+once into the declaw credential vault and switch the workflows onto the
+vault path:
+
+```bash
+python sandboxed/provision_vault.py        # creates secret "data-intel-openai"
+export DECLAW_OPENAI_VAULT_REF=data-intel-openai
+```
+
+When the ref is set, `wisdomai_analytics_policy` sandboxes pass
+`vault_refs` so the egress proxy injects the key on the matching
+outbound request; the in-VM env only ever holds the placeholder
+`declaw:vault-managed`. Unset the ref to fall back to env forwarding.
 
 ## WisdomAI context (why these three workflows)
 

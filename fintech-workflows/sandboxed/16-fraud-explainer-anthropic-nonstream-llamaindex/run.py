@@ -2,10 +2,13 @@
 
 Same FunctionAgent as the baseline, wrapped in a Declaw sandbox under
 `compliance_rag_policy`:
-  * Outbound requests to api.anthropic.com have PAN/SSN/VPA/card-PAN
-    tokenised by the proxy before the request leaves the microVM.
-  * Injection defense is ON with threshold=0.5 — attacker-supplied
-    merchant descriptor text can't hijack the narrative.
+  * Outbound requests to api.anthropic.com have PAN/SSN/VPA/card-PAN redacted
+    by the proxy before the request leaves the microVM, then rehydrated on the
+    response — this is a genuine non-streaming `messages.create()` call (the
+    proxy JSON-body redaction bug that used to 404 it, SDK #08, is fixed).
+  * Injection defense scans with threshold=0.5 (data-egress-sensitive + judge,
+    log_only) — attacker-supplied merchant descriptor text is detected and
+    audited so it can't quietly hijack the narrative.
   * Allowlist = api.anthropic.com + api.openai.com + pypi bootstrap only;
     a compromised tool helper cannot exfil to a third domain.
 """
@@ -86,13 +89,12 @@ AGENT_SCRIPT = textwrap.dedent("""
 
     def draft_customer_letter(transaction: dict, customer: dict,
                               features: dict, policy_excerpt: str) -> str:
-        \"\"\"Claude narrative generator. Uses messages.stream() under the
-        hood as a workaround for a Declaw proxy bug on non-streaming
-        Anthropic requests (documented in declaw-sdk-issues/). The
-        caller-facing API stays non-streaming (one string returned).\"\"\"
+        \"\"\"Claude narrative generator — a native non-streaming
+        messages.create() call through the Declaw proxy. (Earlier this had to
+        use messages.stream() to dodge a proxy 404 on non-streaming Anthropic
+        requests; that bug, SDK #08, is now fixed proxy-side.)\"\"\"
         client = AnthropicClient()
-        chunks = []
-        with client.messages.stream(
+        resp = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=500,
             system=("You are a customer-facing fraud-operations specialist. "
@@ -104,10 +106,9 @@ AGENT_SCRIPT = textwrap.dedent("""
                 "transaction": transaction, "customer": customer,
                 "fraud_features": features, "policy_excerpt": policy_excerpt,
             })}],
-        ) as stream:
-            for delta in stream.text_stream:
-                chunks.append(delta)
-        return "".join(chunks)
+        )
+        return "".join(
+            b.text for b in resp.content if getattr(b, "type", "") == "text")
 
     # Deterministic pipeline (same shape as the baseline). Each step is a
     # FunctionTool — kept for API-surface parity — but called directly
@@ -166,9 +167,9 @@ def main() -> None:
         print(f"\n=== Fraud Explainer (sandboxed, Anthropic non-stream) ===")
         print(f"Customer: {cid} — Hint: {hint!r}\n")
         print("[agent] entering compliance_rag_policy sandbox (Anthropic "
-              "non-stream — PII in log_only mode while Declaw patches "
-              "the Anthropic-side redaction path; detections still land "
-              "in the audit trail, body flows untouched)")
+              "messages.create() non-stream — PII redacted outbound and "
+              "rehydrated on the response; injected merchant-descriptor text "
+              "is detected and audited)")
         pol = compliance_rag_policy(LLM_DOMAINS)
         out = run_python_in_sandbox(
             "fraud-explain", AGENT_SCRIPT, pol,

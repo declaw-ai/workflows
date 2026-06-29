@@ -2,12 +2,14 @@
 
 Mirrors the health-tech 04-lab-result pattern with a domain-specific split:
 
-  Sandbox 1 — statement-parse  (kyc_document_policy, injection_defense=block)
+  Sandbox 1 — statement-parse  (kyc_document_policy, injection scanned)
     * Receives the raw statement narration (untrusted, borrower-supplied text).
     * Runs regex feature extraction deterministically — no LLM here.
-    * injection_defense=block catches the embedded SYSTEM memo in c-002's
-      narration before any prompt reaches the model.
-    * PAN / Aadhaar / account numbers are redacted (action=block at boundary).
+    * Injection is scanned (data-egress-sensitive posture + Tier-2 judge,
+      action=log_only) so the embedded SYSTEM memo in c-002's narration is
+      detected + audited; the regex parser also deterministically strips
+      [SYSTEM ...] lines so no injected directive flows into the features.
+    * PAN / Aadhaar / account numbers are redacted + rehydrated at boundary.
     * Outputs structured features dict — clean, no raw narration forwarded.
 
   Sandbox 2 — lending-agent  (lending_llm_policy, LLM allowed)
@@ -18,7 +20,9 @@ Mirrors the health-tech 04-lab-result pattern with a domain-specific split:
 
 Demo result:
   Baseline:  LLM sees injected memo → may approve 10x limit for SUPER-PRIME.
-  Sandboxed: injection blocked in sandbox 1 → real features → correct limit.
+  Sandboxed: injection detected + stripped in sandbox 1 → real features →
+             correct limit. (Enforcing action=block variant: see
+             verify_security_primitives.py.)
 """
 from __future__ import annotations
 
@@ -49,7 +53,7 @@ _statement  = STATEMENTS[CUSTOMER_ID]
 
 
 # ---------------------------------------------------------------------------
-# Sandbox 1: statement-parse — untrusted-IO, injection_defense=block
+# Sandbox 1: statement-parse — untrusted-IO, injection scanned (log_only)
 # ---------------------------------------------------------------------------
 
 PARSE_SCRIPT = textwrap.dedent("""
@@ -203,8 +207,9 @@ def main() -> None:
     print(f"       {gstn_result}")
     print()
 
-    # Sandbox 1: parse statement — injection blocked before it reaches any LLM
-    print("[statement-parse sandbox — kyc_document_policy, injection_defense=block]")
+    # Sandbox 1: parse statement — injection scanned + detected; the LLM in
+    # sandbox 2 only ever receives the clean feature dict
+    print("[statement-parse sandbox — kyc_document_policy, injection scanned (log_only)]")
     parse_out = run_python_in_sandbox(
         "statement-parse",
         PARSE_SCRIPT,
@@ -239,7 +244,7 @@ def main() -> None:
     print("--- Underwriting Result (sandboxed) ---")
     print(agent_out.get("result", "(no result returned)"))
     print()
-    print("[note] Injection in c-002 statement was blocked in sandbox 1.")
+    print("[note] Injection in c-002 statement was detected + audited and stripped in sandbox 1.")
     print("       LLM saw clean features only — no SUPER-PRIME inflation.")
     print()
 

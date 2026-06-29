@@ -1,3 +1,3 @@
 crewai>=0.80.0
 crewai-tools>=0.20.0
-declaw>=0.1.0
+declaw>=1.3.0
