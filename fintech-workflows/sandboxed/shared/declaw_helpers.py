@@ -438,13 +438,18 @@ def create_corpus_volume(name: str, files: dict[str, str]) -> str | None:
     return vol.volume_id
 
 
-def corpus_attachment(volume_id: str, mount_path: str, *, read_only: bool = True):
-    """Build a VolumeAttachment that mounts a volume at `mount_path`
-    (read-only by default — the right posture for a shared reference corpus)."""
+def corpus_attachment(volume_id: str, mount_path: str, *, mode: str = "copy"):
+    """Build a VolumeAttachment for `mount_path`.
+
+    Default ``mode="copy"`` hydrates the volume's files into the VM at create
+    time — robust, with no live-NFS-mount dependency, and the right fit for a
+    write-once reference corpus shared across sandboxes without the SDK
+    re-shipping the bytes per run. Use ``mode="mount-ro"`` for a live read-only
+    NFS mount only when the corpus is large or updated out-of-band (that path
+    needs the live-mount service healthy)."""
     v = _import_volumes()
     return v["VolumeAttachment"](
-        volume_id=volume_id, mount_path=mount_path,
-        mode="mount-ro" if read_only else "mount")
+        volume_id=volume_id, mount_path=mount_path, mode=mode)
 
 
 def delete_volume(volume_id: str | None) -> None:
