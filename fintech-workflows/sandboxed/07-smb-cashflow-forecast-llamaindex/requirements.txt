@@ -1,0 +1,2 @@
+# llama-index-core and llama-index-llms-openai are pre-baked in the
+# Declaw ai-agent sandbox template — no host-side install needed.
