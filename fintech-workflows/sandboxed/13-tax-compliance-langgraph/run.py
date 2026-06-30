@@ -56,7 +56,7 @@ class TaxState(TypedDict, total=False):
     gstn_verification: dict
     draft_return: str
     compliance_notes: str
-    filing_status: Literal["filed", "held", "error"]
+    filing_status: Literal["prepared_pending_signatory_filing", "held", "error"]
     audit_log: Annotated[list[dict], "append-only audit trail"]
 
 
@@ -248,12 +248,15 @@ def compliance_review(state: TaxState) -> TaxState:
 
 
 def file_or_hold(state: TaxState) -> TaxState:
+    # The file/hold decision is deterministic; the LLM only drafted the return.
+    # "prepared_pending_signatory_filing" means the return is computed and ready
+    # but NOT autonomously filed — an authorized signatory submits to GSTN.
     gst = state.get("gst_liability", 0)
     notes = state.get("compliance_notes", "")
     if "sanctions" in notes.lower():
-        status: Literal["filed", "held", "error"] = "held"
+        status: Literal["prepared_pending_signatory_filing", "held", "error"] = "held"
     elif gst > 0:
-        status = "filed"
+        status = "prepared_pending_signatory_filing"
     else:
         status = "held"
     print(f"[node file_or_hold] filing_status={status} gst_liability={gst}")

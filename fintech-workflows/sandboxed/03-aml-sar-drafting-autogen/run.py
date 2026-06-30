@@ -15,7 +15,8 @@ Security properties vs. the UNSANDBOXED baseline:
     SAR; see policy comment in declaw_helpers.py).
 
 Group chat: Alert-Triager -> Graph-Investigator -> Narrative-Drafter -> Compliance-Reviewer
-Termination: SAR_READY token | MaxMessages(20)
+Termination: DRAFT_READY_FOR_OFFICER_REVIEW token | MaxMessages(20)
+The crew DRAFTS only; a human compliance officer files the SAR with FIU-IND/FinCEN.
 """
 from __future__ import annotations
 
@@ -148,19 +149,21 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
             name="Compliance_Reviewer",
             model_client=model,
             system_message=(
-                "You are a Senior Compliance Reviewer. Validate the SAR narrative "
-                "against FinCEN filing requirements and FATF Rec 20: "
-                "(1) all mandatory fields present, (2) no speculative language, "
-                "(3) objective factual basis stated, (4) BSA amount threshold met. "
-                "When satisfied, output the final approved narrative then append "
-                "SAR_READY on a line by itself to close the workflow."
+                "You are an LLM pre-check reviewer — NOT the filing decision. A "
+                "human compliance officer files the SAR with FIU-IND / FinCEN. "
+                "Validate the SAR narrative against FinCEN filing requirements and "
+                "FATF Rec 20: (1) all mandatory fields present, (2) no speculative "
+                "language, (3) objective factual basis stated, (4) BSA amount "
+                "threshold met. When satisfied, output the final draft narrative "
+                "then append DRAFT_READY_FOR_OFFICER_REVIEW on a line by itself."
             ),
         )
 
         team = RoundRobinGroupChat(
             [triager, investigator, drafter, reviewer],
             termination_condition=(
-                TextMentionTermination("SAR_READY") | MaxMessageTermination(20)
+                TextMentionTermination("DRAFT_READY_FOR_OFFICER_REVIEW")
+                | MaxMessageTermination(20)
             ),
         )
 

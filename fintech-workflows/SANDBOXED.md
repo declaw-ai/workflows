@@ -185,7 +185,7 @@ own rootfs, and its own network namespace. Concretely:
 
 ### 14 — Treasury Cash Management (CrewAI)
 - Crew runs in one sandbox under `treasury_ops_policy` (PII redact + rehydrate, audit on every sweep-tool call, `owasp-agentic@v1` pack adding tool-misuse / SSRF / cloud-metadata gate denials around the money-movement tools). FX-rate allowlist includes `www.fbil.org.in` + `www.federalreserve.gov`.
-- Live FBIL USDINR rate is fetched on the host and passed in via payload; the Sweep-Planner tool call is audited, and any proposed sweep above the threshold requires a Human-Review node before execution (enforced by the graph, audited by Declaw).
+- Live FBIL USDINR rate is fetched on the host and passed in via payload; the Sweep-Planner tool call is audited, and **every** proposed sweep is held `PENDING_HUMAN_APPROVAL` via a mandatory Human-Review node before execution (no sweep executes autonomously — enforced by the graph, audited by Declaw).
 
 ### 15 — Customer-Support Chatbot (LangGraph, OpenAI **streaming**)
 - Graph: `classify_intent → fetch_context → stream_reply → log_interaction`. The `stream_reply` node calls OpenAI `gpt-4.1` with `stream=True` and yields SSE deltas.
