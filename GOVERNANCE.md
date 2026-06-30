@@ -80,11 +80,11 @@ Decision owner after remediation, and the human gate that must exist in code.
 | 03 | AML / SAR Drafting | LLM drafts; officer files | relabel `SAR_READY`→`DRAFT_READY_FOR_OFFICER_REVIEW` | 🟡 |
 | 04 | Chargeback Dispute | rule (fraud score) + LLM drafts | packet is a draft; confirm before submit | 🟡 |
 | 05 | Compliance RAG | assistive Q&A (no decision) | n/a | 🟢 |
-| 06 | Robo-Advisor | research assist for a registered adviser | adviser issues the recommendation | 🔴 (or keep as labelled threat-demo) |
+| 06 | Robo-Advisor | research assist for a registered adviser | sandboxed variant: adviser issues the recommendation | 🔴 baseline = labelled threat-demo; **repo-only, not landing-page** |
 | 07 | SMB Cash-Flow Underwriting | rule engine; LLM forecasts | add officer-confirm (it's credit) | 🔴→🟡 |
 | 08 | Collections Outreach | LLM drafts; deterministic tone gate | queued for approval before send | 🟡 |
 | 09 | Merchant Onboarding | rule engine; LLM classifies MCC | confirm on auto-approve | 🟡 |
-| 10 | Market-Abuse Surveillance | LLM drafts memo; officer escalates/suppresses | remove autonomous `ALERT_SUPPRESSED` | 🔴 (or labelled threat-demo) |
+| 10 | Market-Abuse Surveillance | LLM drafts memo; officer escalates/suppresses | sandboxed variant: remove autonomous `ALERT_SUPPRESSED` | 🔴 baseline = labelled threat-demo |
 | 11 | Insurance Claim Triage | LLM recommends; human on payout/denial | `AUTO_APPROVED`→`RECOMMEND_APPROVE` | 🟡 |
 | 12 | Equity Research | research **draft** for a registered analyst | implement the real `human_reviewed` gate the docs promise | 🔴 + doc/code fix |
 | 13 | Tax Compliance | rule engine; LLM drafts | relabel `filed`→`prepared — pending signatory filing` | 🟡 |
@@ -121,6 +121,30 @@ Closing the loop: after the remediation, the verify suites + a representative
 workflow run are re-executed live so "still showcased" is proven, not asserted.
 
 ---
+
+## 4a. Baseline vs sandboxed (the operating principle — option C)
+
+The repo's pedagogy is **baseline (without declaw) vs sandboxed (with declaw)**.
+That settles how the threat-demo workflows are handled:
+
+- **Baseline = the realistic, often unsafe-by-default pattern** that teams actually
+  build (the LLM autonomously decides / suppresses / publishes). This is the
+  *contrast*; keeping it unsafe is the point — it's what declaw fixes. Label it
+  clearly as the unsafe pattern.
+- **Sandboxed = always the convergent governance core** — the LLM is demoted to
+  propose/draft, a human (or deterministic rule) owns the binding action, and the
+  PII / injection / egress / audit controls apply. This is the differentiator:
+  **declaw turns a non-compliant agent into a compliant one**, not "declaw blocks
+  one attack."
+
+So `02`/`12` get restructured decision-flow in the sandboxed variant; `06`/`10`
+keep the unsafe baseline as the contrast and gain a governed (propose→human)
+sandboxed variant.
+
+**Landing-page exclusion:** `06` (autonomous robo-advice) stays **repo-only** —
+do not feature it in the public landing-page "workflow theatre" even labelled.
+A vendor site running autonomous investment-advice theatre is a brand/regulatory
+risk. `10` is fine to feature once its sandboxed variant is governed.
 
 ## 5. Positioning
 
