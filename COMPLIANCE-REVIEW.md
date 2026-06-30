@@ -21,6 +21,11 @@ Every regulatory statement in the repo falls into one of two buckets:
   on egress", "every action is audited", "the denial is held for a human".
 - ⚠️ Legal claims: use **"designed to support" / "aligns with the direction of" /
   "maps to"** — **never** "compliant with", "guarantees", "satisfies", "certified".
+- 🚫 **Do not call declaw a "human-in-the-loop / HITL / human-gate" layer.** The
+  human gate is a **workflow-layer control**; declaw has no approval-gate primitive
+  today (its own governance packs classify HITL as *advisory*). Correct framing:
+  *"declaw makes autonomous execution impossible (egress/command denial) and audits
+  it; your workflow owns the human approval."* See `GOVERNANCE.md` §1a.
 
 ## Bucket 1 — Engineering facts (verifiable; safe to show)
 These are proven by the verify scripts + the live runs (fintech 17/17, health 7/7)
