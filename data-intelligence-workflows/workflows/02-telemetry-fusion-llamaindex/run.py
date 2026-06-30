@@ -21,17 +21,12 @@ from llama_index.llms.openai import OpenAI as LlamaOpenAI
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 from shared.mock_manuals import fetch_workorder_history, search_manuals  # noqa: E402
-from shared.mock_timeseries import query_timeseries, timeseries_summary  # noqa: E402
+from shared.mock_timeseries import timeseries_summary  # noqa: E402
 
 
 def telemetry_summary(pump_id: str) -> dict[str, Any]:
     """Vibration + temp descriptive stats for a pump, with overnight spike flag."""
     return timeseries_summary(pump_id)
-
-
-def telemetry_window(pump_id: str, start_ts: str, end_ts: str) -> list[dict[str, Any]]:
-    """Raw readings for a pump between ISO timestamps (first 40 returned)."""
-    return query_timeseries(pump_id, start_ts, end_ts)[:40]
 
 
 def manuals_search(keywords: str) -> list[dict[str, str]]:
@@ -48,7 +43,6 @@ async def run_agent(pump_id: str) -> str:
     agent = FunctionAgent(
         tools=[
             FunctionTool.from_defaults(fn=telemetry_summary),
-            FunctionTool.from_defaults(fn=telemetry_window),
             FunctionTool.from_defaults(fn=manuals_search),
             FunctionTool.from_defaults(fn=workorder_history),
         ],
