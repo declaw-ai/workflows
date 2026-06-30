@@ -37,6 +37,7 @@ from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, LLM_PIP, compliance_rag_policy, multi_bank_api_policy,
     llm_envs, run_python_in_sandbox,
 )
+from shared import governance as gov  # noqa: E402
 
 
 # ---------- State ----------
@@ -53,6 +54,7 @@ class OnboardingState(TypedDict, total=False):
     risk_flags: list[str]
     decision: Literal["approve", "decline", "manual_review"]
     decision_reason: str
+    status: str                   # gate state: PENDING_HUMAN_CONFIRMATION until ops signs off
     injection_detected: bool
     audit_log: Annotated[list[dict], "append-only audit trail"]
 
@@ -256,12 +258,32 @@ def decision(state: OnboardingState) -> OnboardingState:
         dec = "approve"
         reason = "All checks passed."
 
-    print(f"[node decision] merchant_id={state['merchant_id']} decision={dec}")
+    print(f"[node decision] merchant_id={state['merchant_id']} rule-engine decision={dec}")
     return {
         "risk_flags": flags,
         "decision": dec,
         "decision_reason": reason,
         "audit_log": [{"node": "decision", "decision": dec, "flags": flags}],
+    }
+
+
+def ops_review(state: OnboardingState) -> OnboardingState:
+    """Mandatory ops-confirmation gate. The rule engine produced the
+    recommendation and the LLM only classified the MCC; onboarding is NOT
+    binding until an ops reviewer signs off — auto-approve included. That closes
+    the "autonomous grant" gap (a merchant onboarding is a material decision)."""
+    dec = state.get("decision", "manual_review")
+    recommendation = {
+        "approve": gov.RECOMMEND_APPROVE,
+        "decline": gov.RECOMMEND_DECLINE,
+        "manual_review": gov.RECOMMEND_REVIEW,
+    }.get(dec, gov.RECOMMEND_REVIEW)
+    print(f"[node ops_review] {recommendation} — {gov.PENDING_HUMAN_CONFIRMATION} "
+          "(no autonomous onboarding; ops signs off)")
+    return {
+        "status": gov.PENDING_HUMAN_CONFIRMATION,
+        "audit_log": [{"node": "ops_review", "recommendation": recommendation,
+                       "status": gov.PENDING_HUMAN_CONFIRMATION}],
     }
 
 
@@ -275,6 +297,7 @@ def build_graph():
     g.add_node("website_risk_crawl", website_risk_crawl)
     g.add_node("mcc_classify", mcc_classify)
     g.add_node("decision", decision)
+    g.add_node("ops_review", ops_review)
 
     g.add_edge(START, "gstn_verify")
     g.add_edge("gstn_verify", "pan_verify")
@@ -282,7 +305,9 @@ def build_graph():
     g.add_edge("penny_drop", "website_risk_crawl")
     g.add_edge("website_risk_crawl", "mcc_classify")
     g.add_edge("mcc_classify", "decision")
-    g.add_edge("decision", END)
+    # Every outcome — auto-approve included — passes through the ops gate.
+    g.add_edge("decision", "ops_review")
+    g.add_edge("ops_review", END)
     return g.compile(checkpointer=MemorySaver())
 
 
@@ -304,7 +329,8 @@ def main() -> None:
               f"(declared: {m.get('mcc_self_declared')})")
         print(f"Confidence:          {result.get('mcc_confidence', 0):.2f}")
         print(f"Injection detected:  {result.get('injection_detected', False)}")
-        print(f"Decision:            {result.get('decision')}")
+        print(f"Rule-engine decision:{result.get('decision')}  ->  "
+              f"{result.get('status', '(no gate)')}")
         print(f"Reason:              {result.get('decision_reason')}")
         print(f"Risk flags:          {result.get('risk_flags')}")
         print()

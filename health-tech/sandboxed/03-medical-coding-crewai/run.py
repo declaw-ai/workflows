@@ -1,8 +1,14 @@
 """Medical Coding — sandboxed, **real CrewAI inside the microVM**.
 
-Full CrewAI sequential pipeline (Coder → Auditor → Submitter) runs inside
+Full CrewAI sequential pipeline (Coder → Auditor → Draft-Assembler) runs inside
 a single Firecracker sandbox. Every OpenAI call the Crew makes crosses
 the declaw proxy with PII redaction + rehydration on.
+
+Governance posture (see shared/governance.py): the crew DRAFTS ICD-10/CPT codes
+and a DRAFT 837 only; a certified medical coder reviews and signs off. The 837 is
+NEVER autonomously final (False Claims Act / upcoding liability) — it is held at a
+human-coder gate (status PENDING_HUMAN_CONFIRMATION, reviewer
+REVIEWER_CERTIFIED_CODER).
 
 Known infra limitation (2026-04): ``pip install crewai`` pulls ~300
 transitive deps (langchain, litellm, chromadb, embedchain, …). Piped
@@ -32,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
 from shared.mock_phi import PATIENTS  # noqa: E402
+from shared import governance as gov  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, healthcare_llm_policy, llm_envs, run_python_in_sandbox,
 )
@@ -55,6 +62,15 @@ CREWAI_SCRIPT = textwrap.dedent("""
     PATIENT = inp["patient"]
     NOTE = inp["note"]
 
+    # Governance labels injected from shared.governance on the host (the sandbox
+    # cannot import the shared module). The crew DRAFTS codes + a draft 837; a
+    # certified medical coder reviews and signs off. The 837 is NEVER
+    # autonomously final (False Claims Act / upcoding liability).
+    GOV = inp["gov"]
+    PENDING_HUMAN_CONFIRMATION = GOV["PENDING_HUMAN_CONFIRMATION"]
+    DRAFT_PENDING_REVIEW = GOV["DRAFT_PENDING_REVIEW"]
+    REVIEWER_CERTIFIED_CODER = GOV["REVIEWER_CERTIFIED_CODER"]
+
     @tool("Run NCCI and documentation check")
     def ncci_check(codes_json: str) -> str:
         \"\"\"Given JSON like {\\"icd10\\": [...], \\"cpt\\": [...]}, run NCCI edit
@@ -71,12 +87,16 @@ CREWAI_SCRIPT = textwrap.dedent("""
             issues.append("Office visit CPT requires linked diagnosis")
         return json.dumps({"issues": issues, "passed": not issues})
 
-    @tool("Build 837 claim payload")
+    @tool("Build draft 837 claim payload")
     def build_837(claim_json: str) -> str:
-        \"\"\"Given JSON {patient_id, icd10, cpt}, return the 837 claim JSON.\"\"\"
+        \"\"\"Given JSON {patient_id, icd10, cpt}, return a DRAFT 837 claim JSON
+        held for certified-coder sign-off — NOT an autonomously final claim.\"\"\"
         payload = json.loads(claim_json)
         return json.dumps({
             "claim_id": f"CLM-{PATIENT['id']}",
+            "status": PENDING_HUMAN_CONFIRMATION,
+            "label": DRAFT_PENDING_REVIEW,
+            "review_required_by": REVIEWER_CERTIFIED_CODER,
             "subscriber": {
                 "member_id": PATIENT["member_id"],
                 "payer": PATIENT["payer"],
@@ -99,9 +119,13 @@ CREWAI_SCRIPT = textwrap.dedent("""
         tools=[ncci_check], allow_delegation=False,
     )
     submitter = Agent(
-        role="Claims Submitter",
-        goal="Produce the final 837 using build_837 once audit passes.",
-        backstory="EDI specialist. You always use the build_837 tool.",
+        role="Draft Claim Assembler",
+        goal=("Assemble a DRAFT 837 using build_837 once audit passes — for a "
+              f"{REVIEWER_CERTIFIED_CODER} to review and sign off. NEVER mark a "
+              "claim final or file it."),
+        backstory=("EDI specialist. You always use the build_837 tool to produce "
+                   "a DRAFT 837 held for certified-coder review; you do not file "
+                   "claims and you do not make the claim binding."),
         tools=[build_837], allow_delegation=False,
     )
 
@@ -122,9 +146,15 @@ CREWAI_SCRIPT = textwrap.dedent("""
         description=(
             f"If the audit passed, call build_837 with JSON containing "
             f"patient_id='{PATIENT['id']}' and the coder's icd10/cpt arrays. "
-            "Return the 837 JSON as your final answer."
+            "Return the DRAFT 837 JSON as your final answer. State clearly that "
+            f"the draft is {PENDING_HUMAN_CONFIRMATION} and must be reviewed and "
+            f"signed off by a {REVIEWER_CERTIFIED_CODER} before submission — it "
+            "is NOT a final claim."
         ),
-        expected_output="The 837 claim JSON.",
+        expected_output=(
+            f"The DRAFT 837 claim JSON ({DRAFT_PENDING_REVIEW}), pending "
+            f"{REVIEWER_CERTIFIED_CODER} sign-off."
+        ),
         agent=submitter, context=[code_task, audit_task],
     )
 
@@ -146,18 +176,35 @@ def main() -> None:
     patient = {"id": p.id, "name": p.name,
                "member_id": p.member_id, "payer": p.payer}
 
-    print("=== Medical Coding Crew (sandboxed, real CrewAI inside microVM) ===\n")
+    print("=== Medical Coding Crew (sandboxed, real CrewAI inside microVM) ===")
+    print(f"governance: {gov.governance_banner()}")
+    print(f"The crew DRAFTS ICD-10/CPT + a draft 837; a {gov.REVIEWER_CERTIFIED_CODER} "
+          f"reviews and signs off. The 837 is NOT autonomously final "
+          f"({gov.PENDING_HUMAN_CONFIRMATION}).\n")
     pol = healthcare_llm_policy(allow_domains=LLM_DOMAINS)
     out = run_python_in_sandbox(
         "crewai-coding", CREWAI_SCRIPT, pol,
-        payload={"patient": patient, "note": note},
+        payload={
+            "patient": patient, "note": note,
+            # Governance labels — the crew only DRAFTS; a certified medical coder
+            # owns the binding sign-off (the sandbox can't import shared.governance).
+            "gov": {
+                "PENDING_HUMAN_CONFIRMATION": gov.PENDING_HUMAN_CONFIRMATION,
+                "DRAFT_PENDING_REVIEW": gov.DRAFT_PENDING_REVIEW,
+                "REVIEWER_CERTIFIED_CODER": gov.REVIEWER_CERTIFIED_CODER,
+            },
+        },
         # crewai is baked into the `ai-agent` template — no pip install needed
         pip_packages=None,
         envs=llm_envs(),
         timeout=500,
     )
-    print("\n--- Final 837 claim ---")
+    print("\n--- DRAFT 837 claim (pending certified-coder review) ---")
     print(out["claim"])
+    print(f"\n[gate] Binding outcome is {gov.PENDING_HUMAN_CONFIRMATION}: the crew "
+          f"only DRAFTS the codes + 837; a {gov.REVIEWER_CERTIFIED_CODER} must "
+          "review and sign off before submission. Nothing is coded or filed "
+          "autonomously.")
 
 
 if __name__ == "__main__":

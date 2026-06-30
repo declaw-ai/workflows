@@ -1,5 +1,14 @@
 """SMB Cash-Flow Forecast — SANDBOXED (two-sandbox split, Declaw).
 
+Governance posture (see ../../GOVERNANCE.md): this is working-capital credit
+underwriting, so it holds the same red line as wf01 — **rule engine decides ·
+LLM forecasts · officer confirms**. The deterministic, CIBIL-gated
+`recommend_limit` produces the recommendation, the LlamaIndex agent only
+forecasts cash-flow, and EVERY outcome (approve included) is held
+PENDING_HUMAN_CONFIRMATION at an officer-confirmation gate before it is binding.
+No credit limit is sanctioned autonomously — the RBI SBR / SR 11-7 / EU-AI-Act
+non-delegation requirement.
+
 Mirrors the health-tech 04-lab-result pattern with a domain-specific split:
 
   Sandbox 1 — statement-parse  (kyc_document_policy, injection scanned)
@@ -45,6 +54,7 @@ from shared.declaw_helpers import (  # noqa: E402
     run_python_in_sandbox,
     llm_envs,
 )
+from shared import governance as gov  # noqa: E402
 
 
 CUSTOMER_ID = "c-002"
@@ -180,11 +190,61 @@ AGENT_SCRIPT = textwrap.dedent("""
                 "Return decision, recommended limit, and key metrics."
             )
         )
+        # Deterministic rule-engine recommendation (CIBIL-gated) computed
+        # directly — NOT via the LLM. The agent above only forecasts/narrates;
+        # the binding sanction is owned by a human officer at the host-side
+        # confirmation gate. Surfacing this structured recommendation lets the
+        # officer gate route every outcome through PENDING_HUMAN_CONFIRMATION.
+        rule_forecast = forecast_cashflow(FEATURES)
+        recommendation = recommend_limit(rule_forecast, CIBIL_SCORE)
         with open("/tmp/out.json", "w") as f:
-            json.dump({"result": str(resp)}, f)
+            json.dump({
+                "result": str(resp),
+                "recommendation": recommendation,
+                "forecast": rule_forecast,
+            }, f)
 
     asyncio.run(main())
 """)
+
+
+# ---------------------------------------------------------------------------
+# Officer-confirmation gate (mirrors wf01 officer_review + _print_outcome)
+# ---------------------------------------------------------------------------
+
+def _officer_gate(recommendation: dict) -> tuple[str, str, str]:
+    """Mandatory human gate — this is working-capital credit underwriting (same
+    red line as wf01), so EVERY outcome (approve included) is held
+    PENDING_HUMAN_CONFIRMATION and is NOT binding. The rule engine
+    (recommend_limit, CIBIL-gated) produced the recommendation and the LLM only
+    forecast cash-flow; an officer owns the binding sanction. No limit is
+    disbursed autonomously — the RBI SBR / SR 11-7 / EU-AI-Act non-delegation
+    requirement. Returns (recommendation_status, gate_status, notes)."""
+    decision = recommendation.get("decision", "review")
+    rec = {
+        "approve": gov.RECOMMEND_APPROVE,
+        "review":  gov.RECOMMEND_REVIEW,
+        "decline": gov.RECOMMEND_DECLINE,
+    }.get(decision, gov.RECOMMEND_REVIEW)
+    notes = (
+        f"{rec}: rule-engine decision={decision}, "
+        f"limit=INR {recommendation.get('recommended_limit_inr', 0):,.0f}, "
+        f"CIBIL={recommendation.get('cibil_score_used')}. "
+        f"Officer to confirm before the limit is binding "
+        f"(verify GSTIN status, re-check bureau flags)."
+    )
+    return rec, gov.PENDING_HUMAN_CONFIRMATION, notes
+
+
+def _print_outcome(recommendation: dict, rec_status: str, gate_status: str,
+                   notes: str) -> None:
+    print("--- Officer Confirmation Gate ---")
+    print(f"Rule-engine decision: {recommendation.get('decision', '(none)')}"
+          f"  ->  {rec_status}")
+    print(f"Status:               {gate_status}")
+    print(f"Recommended limit:    "
+          f"INR {recommendation.get('recommended_limit_inr', 0):,.0f}")
+    print(f"Officer gate:         {notes}")
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +259,8 @@ def main() -> None:
     print(f"[host] Customer: {_customer.name} ({CUSTOMER_ID})")
     print(f"       GSTIN:    {_customer.gstin}")
     print(f"       CIBIL:    {_customer.cibil_score}")
+    print("[host] Governance: rule engine decides · LLM forecasts · officer "
+          "confirms every outcome")
     print()
 
     # Host-side GSTN verify (public API, no sensitive data)
@@ -241,8 +303,20 @@ def main() -> None:
     )
 
     print()
-    print("--- Underwriting Result (sandboxed) ---")
+    print("--- Underwriting Result (sandboxed, LLM forecast) ---")
     print(agent_out.get("result", "(no result returned)"))
+    print()
+
+    # Mandatory officer-confirmation gate — credit underwriting (same red line
+    # as wf01): EVERY outcome (approve included) is held
+    # PENDING_HUMAN_CONFIRMATION and is NOT binding. Rule engine decided, LLM
+    # forecast, officer confirms.
+    recommendation = agent_out.get("recommendation", {})
+    rec_status, gate_status, notes = _officer_gate(recommendation)
+    _print_outcome(recommendation, rec_status, gate_status, notes)
+    print(f"[NOTE] {rec_status} is NOT auto-sanctioned — it is held "
+          f"{gov.PENDING_HUMAN_CONFIRMATION} for officer sign-off (approve "
+          "included), same non-delegation red line as wf01.")
     print()
     print("[note] Injection in c-002 statement was detected + audited and stripped in sandbox 1.")
     print("       LLM saw clean features only — no SUPER-PRIME inflation.")

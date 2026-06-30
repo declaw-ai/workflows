@@ -19,7 +19,8 @@ Security properties vs. the UNSANDBOXED baseline:
     forbidden phrases detected, the sandbox raises an error before routing.
 
 Group chat: Risk-Segmenter -> Message-Drafter -> Tone-Reviewer -> Channel-Router
-Termination: OUTREACH_READY token | MaxMessages(20)
+Termination: DRAFT_QUEUED_FOR_APPROVAL token | MaxMessages(20)
+Drafts are queued for approval before delivery — nothing is sent autonomously.
 """
 from __future__ import annotations
 
@@ -144,15 +145,16 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
                 "60DPD -> WhatsApp + email; 30DPD -> email only. "
                 "Format outreach payload for each channel using the channel_config "
                 "values (tokens like [REDACTED_PHONE] are fine — the proxy "
-                "rehydrates them before actual delivery). "
-                "When routing is complete, output OUTREACH_READY on a line by itself."
+                "rehydrates them before actual delivery). The drafts are QUEUED "
+                "for approval before any delivery — nothing is sent autonomously. "
+                "When routing is complete, output DRAFT_QUEUED_FOR_APPROVAL on a line by itself."
             ),
         )
 
         team = RoundRobinGroupChat(
             [segmenter, drafter, tone_reviewer, router],
             termination_condition=(
-                TextMentionTermination("OUTREACH_READY") | MaxMessageTermination(20)
+                TextMentionTermination("DRAFT_QUEUED_FOR_APPROVAL") | MaxMessageTermination(20)
             ),
         )
 
