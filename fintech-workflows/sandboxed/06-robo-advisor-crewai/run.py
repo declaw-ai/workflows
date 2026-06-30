@@ -1,7 +1,21 @@
-"""Robo-Advisor — sandboxed, real CrewAI inside microVM.
+"""Robo-Advisor — sandboxed, real CrewAI inside microVM. GOVERNED variant.
+
+Governance posture (see ../../GOVERNANCE.md, option C): personalized investment
+advice is a regulated act (SEBI IA / SEC RIA) that requires a REGISTERED adviser.
+So this sandboxed variant is **research/analysis assist for a registered investment
+adviser** — the crew DRAFTS a target allocation, and a human adviser reviews and
+issues the binding recommendation (the draft is held PENDING_HUMAN_CONFIRMATION;
+no advice reaches the client autonomously). The baseline (workflows/06-...) is the
+labelled threat demo showing the unsafe autonomous-advice pattern this fixes.
+
+NOTE: repo-only. Do NOT feature this on the public landing-page "workflow theatre"
+even labelled — a vendor site running autonomous investment-advice theatre is a
+brand/regulatory risk.
 
 Four-agent CrewAI sequential pipeline runs inside a single Firecracker sandbox:
   Risk-Profiler -> Market-Researcher -> Allocator -> Suitability-Checker
+(the crew produces a DRAFT for adviser review — it does not place trades or issue
+client-facing advice)
 
 Policy: broker_trade_policy([LLM_DOMAINS, alphavantage, openfigi])
   * PII redacted + rehydrated — portfolio holdings/amounts not exposed in cleartext
@@ -37,6 +51,7 @@ from shared.declaw_helpers import (  # noqa: E402
     llm_envs,
     run_python_in_sandbox,
 )
+from shared import governance as gov  # noqa: E402
 
 
 CREWAI_SCRIPT = textwrap.dedent("""
@@ -175,9 +190,10 @@ CREWAI_SCRIPT = textwrap.dedent("""
     )
     suitability_task = Task(
         description=(
-            f"Check suitability of proposed allocation for customer_id='{customer_id}'. "
-            "Run sanctions_check on every proposed instrument. "
-            "Produce final APPROVED or FLAGGED per instrument."
+            f"Check suitability of the proposed DRAFT allocation for customer_id='{customer_id}'. "
+            "Run sanctions_check on every proposed instrument. Flag each instrument "
+            "SUITABLE or FLAGGED for the registered adviser's review — you are NOT "
+            "issuing advice; the adviser decides."
         ),
         expected_output=(
             "Suitability report: per-instrument sanctions status and decision."
@@ -258,8 +274,14 @@ def main() -> None:
         template="ai-agent",
     )
 
-    print("\n--- Robo-Advisor Recommendation ---")
+    # Adviser gate (host side): the crew's output is a DRAFT for a registered
+    # adviser, never client-facing autonomous advice. A human adviser reviews
+    # and issues the binding recommendation.
+    print("\n--- Robo-Advisor Recommendation DRAFT (for registered-adviser review) ---")
     print(out.get("recommendation", out))
+    print(f"\n[adviser gate] {gov.RECOMMEND_REVIEW} — {gov.PENDING_HUMAN_CONFIRMATION}: "
+          "a REGISTERED investment adviser reviews this draft and issues the binding "
+          "recommendation. Nothing is advised to the client autonomously (SEBI IA / SEC RIA).")
 
 
 if __name__ == "__main__":
