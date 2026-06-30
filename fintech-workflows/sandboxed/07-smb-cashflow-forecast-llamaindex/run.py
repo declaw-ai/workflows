@@ -226,14 +226,21 @@ def _officer_gate(recommendation: dict) -> tuple[str, str, str]:
         "review":  gov.RECOMMEND_REVIEW,
         "decline": gov.RECOMMEND_DECLINE,
     }.get(decision, gov.RECOMMEND_REVIEW)
+    # Route through the shared enforcing primitive for the canonical gate stamp
+    # (the shared convergent core — same helper every decision workflow uses).
+    gate = gov.officer_gate(
+        rec, reviewer="credit officer", decision=decision,
+        recommended_limit_inr=recommendation.get("recommended_limit_inr", 0),
+        cibil=recommendation.get("cibil_score_used"),
+    )
     notes = (
-        f"{rec}: rule-engine decision={decision}, "
+        f"{gate['recommendation']}: rule-engine decision={decision}, "
         f"limit=INR {recommendation.get('recommended_limit_inr', 0):,.0f}, "
         f"CIBIL={recommendation.get('cibil_score_used')}. "
-        f"Officer to confirm before the limit is binding "
+        f"Officer ({gate['reviewer']}) to confirm before the limit is binding "
         f"(verify GSTIN status, re-check bureau flags)."
     )
-    return rec, gov.PENDING_HUMAN_CONFIRMATION, notes
+    return gate["recommendation"], gate["status"], notes
 
 
 def _print_outcome(recommendation: dict, rec_status: str, gate_status: str,
