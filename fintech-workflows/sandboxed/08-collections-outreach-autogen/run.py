@@ -193,11 +193,23 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
             for m in result.messages
         ]
 
+        # DETERMINISTIC tone gate (RBI digital-lending / FDCPA) — runs in code,
+        # not as an LLM-discretionary tool. Scans the outbound routing payload for
+        # any forbidden harassment phrase and RAISES before the message is emitted.
+        # The Tone-Reviewer LLM is a first pass; this is the enforced backstop.
+        _outbound = (final_routing or "").lower()
+        _hits = [p for p in FORBIDDEN if p.lower() in _outbound]
+        if _hits:
+            raise RuntimeError(
+                f"tone gate blocked the outbound message before routing — "
+                f"forbidden phrase(s): {_hits}")
+
         with open("/tmp/out.json", "w") as f:
             json.dump({
                 "final_routing": final_routing,
                 "transcript": transcript,
                 "injection_acted": injection_acted,
+                "tone_gate": "passed (deterministic post-run check, no forbidden phrases)",
             }, f)
 
     asyncio.run(main())

@@ -6,8 +6,9 @@ The `draft_packet` step is wrapped in pci_payments_policy:
     for tokenisation). The LLM only ever sees [REDACTED_*] tokens.
   - injection scanned (data-egress-sensitive + Tier-2 judge, log_only) since
     merchant descriptors are attacker-controllable — detected + audited
-  - owasp-agentic@v1 governance pack adds tool-misuse / SSRF / cloud-metadata
-    gate denials around the Stripe dispute tool
+  - owasp-agentic@v1 governance pack (attached via pci_payments_policy) adds
+    cmd/network gate denials (reverse-shell / SSRF / cloud-metadata) on top of
+    the platform floor — there is no Stripe tool-calling agent in this workflow
   - Egress locked to api.stripe.com + api.openai.com only
 
 Decision posture: the fraud score is rule-based and the LLM only drafts the
@@ -41,6 +42,7 @@ from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, LLM_PIP, pci_payments_policy,
     llm_envs, run_python_in_sandbox,
 )
+from shared import governance as gov  # noqa: E402
 
 FRAUD_SCORE_THRESHOLD = 0.75
 
@@ -59,7 +61,8 @@ class ChargebackState(TypedDict, total=False):
     dispute_context: dict
     dispute_packet: str
     dispute_id: str
-    outcome: Literal["queued_for_analyst_confirmation", "rejected", "escalated_to_analyst"]
+    outcome: Literal["queued_for_analyst_confirmation", "escalated_to_analyst"]
+    status: str
     audit_log: Annotated[list[dict], "append-only audit trail"]
 
 
@@ -208,16 +211,22 @@ def queue_dispute(state: ChargebackState) -> ChargebackState:
     submits; nothing leaves to Stripe without that sign-off."""
     packet = state.get("dispute_packet", "")
     dispute_id = f"CB-{state['customer_id']}-{abs(hash(packet)) % 100000:05d}"
-    outcome: Literal["queued_for_analyst_confirmation", "rejected",
+    outcome: Literal["queued_for_analyst_confirmation",
                      "escalated_to_analyst"] = "queued_for_analyst_confirmation"
     if state.get("full_dispute"):
         outcome = "escalated_to_analyst"
+    # Draft stamp references the shared governance constant (not a hardcoded
+    # local string): the packet is QUEUED for analyst approval, never submitted
+    # to the network autonomously.
+    status = gov.DRAFT_QUEUED_FOR_APPROVAL
     print(f"[node queue_dispute] dispute_id={dispute_id} outcome={outcome} "
+          f"status={status} "
           "(packet drafted; awaiting analyst confirmation before submission)")
     return {
         "dispute_id": dispute_id,
         "outcome": outcome,
-        "audit_log": [{"node": "queue_dispute", "outcome": outcome}],
+        "status": status,
+        "audit_log": [{"node": "queue_dispute", "outcome": outcome, "status": status}],
     }
 
 
@@ -257,7 +266,9 @@ def main() -> None:
     print("[NOTE] pci_payments_policy scans injection (data-egress-sensitive + judge,")
     print("       log_only) — detected + audited; enforcing block variant in verify_security_primitives.py.")
     print("[NOTE] Card PAN redacted+rehydrated; CVV redacted and NEVER rehydrated (PCI-DSS v4).")
-    print("[NOTE] owasp-agentic@v1 pack guards the Stripe dispute tool (tool-misuse / SSRF).\n")
+    print("[NOTE] owasp-agentic@v1 pack adds cmd/network gate denials (reverse-shell /")
+    print("       SSRF / cloud-metadata) on top of the platform floor; egress locked to")
+    print("       api.stripe.com + api.openai.com (no Stripe tool-calling agent here).\n")
 
     initial: ChargebackState = {
         "customer_id": "c-002",

@@ -27,6 +27,7 @@ RECOMMEND_REVIEW = "RECOMMEND_REVIEW"
 # Gate states owned by the human node.
 PENDING_HUMAN_CONFIRMATION = "PENDING_HUMAN_CONFIRMATION"
 DRAFT_READY_FOR_OFFICER_REVIEW = "DRAFT_READY_FOR_OFFICER_REVIEW"
+DRAFT_QUEUED_FOR_APPROVAL = "DRAFT_QUEUED_FOR_APPROVAL"
 
 
 @dataclass(frozen=True)
@@ -166,3 +167,34 @@ def governance_banner(profile: JurisdictionProfile | None = None) -> str:
     if p.data_residency:
         bits.append(f"data_residency={p.data_residency}")
     return " | ".join(bits)
+
+
+# ---------- Enforcing primitives (deterministic gates — the shared core) ----------
+# These make the human gate non-bypassable in code, instead of relying on a
+# prompt instruction or an LLM-emitted token. Route every workflow that owns a
+# material decision through one of these so enforcement quality is uniform.
+
+def officer_gate(recommendation: str, *, reviewer: str = "officer", **detail) -> dict:
+    """Stamp a recommendation as held for a human. The binding action is owned by
+    the human, never the LLM. Returns the gate record the workflow surfaces."""
+    return {"status": PENDING_HUMAN_CONFIRMATION, "recommendation": recommendation,
+            "reviewer": reviewer, **detail}
+
+
+def require_human(content, *, reviewer: str = "officer",
+                  status: str = DRAFT_READY_FOR_OFFICER_REVIEW, **detail) -> dict:
+    """Wrap an LLM-produced artifact as a DRAFT held for a named human reviewer —
+    a deterministic stamp on the artifact in code, NOT an LLM-emitted token."""
+    return {"status": status, "reviewer": reviewer, "content": content, **detail}
+
+
+def assert_tone_ok(text: str, forbidden: list[str]) -> bool:
+    """Deterministic tone gate: raise ValueError if any forbidden phrase appears.
+    Use as a post-run check before a customer-facing message is emitted — the
+    RBI digital-lending / FDCPA collections-harassment control. Not LLM-discretionary."""
+    lowered = (text or "").lower()
+    hits = [p for p in forbidden if p.lower() in lowered]
+    if hits:
+        raise ValueError(
+            f"tone gate blocked the message before send — forbidden phrase(s): {hits}")
+    return True

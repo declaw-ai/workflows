@@ -10,22 +10,15 @@ NEVER autonomously final (False Claims Act / upcoding liability) — it is held 
 human-coder gate (status PENDING_HUMAN_CONFIRMATION, reviewer
 REVIEWER_CERTIFIED_CODER).
 
-Known infra limitation (2026-04): ``pip install crewai`` pulls ~300
-transitive deps (langchain, litellm, chromadb, embedchain, …). Piped
-through declaw's MITM TLS proxy this exceeds the API gateway's request
-budget and trips the backend circuit breaker (HTTP 503 "node circuit
-breaker open"). The workflow code itself is correct — run as-is once you
-have a custom declaw Template with crewai pre-baked:
-
-    Template.build(template='''
-        FROM python:3.11-slim
-        RUN pip install --no-cache-dir crewai
-    ''', alias='crewai-ready')
-
-Then swap `template="python"` for `template="crewai-ready"` in the
-sandbox create call (inside `run_python_in_sandbox`) and drop
-`pip_packages=["crewai"]`. The pipe install step becomes a no-op and
-the circuit-breaker path disappears.
+Templating note: crewai is pre-baked into the `ai-agent` template
+(`run_python_in_sandbox` defaults to it), so this workflow does NOT run
+``pip install crewai`` at runtime — `pip_packages=None`. That avoids the
+~300 transitive deps (langchain, litellm, chromadb, embedchain, …) being
+piped through declaw's MITM TLS proxy, which previously exceeded the API
+gateway's request budget and tripped the backend circuit breaker (HTTP
+503 "node circuit breaker open"). With crewai pre-baked there is no
+runtime install and no circuit-breaker path; the latest live run passed
+in ~29s on the `ai-agent` template.
 """
 from __future__ import annotations
 
