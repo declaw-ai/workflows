@@ -50,6 +50,7 @@ from shared.declaw_helpers import (  # noqa: E402
     llm_envs, run_python_in_sandbox,
 )
 from shared import governance as gov  # noqa: E402
+from shared import replay  # noqa: E402
 
 
 # ---------- State ----------
@@ -263,6 +264,9 @@ def risk_score(state: UnderwritingState) -> UnderwritingState:
         "loan_amount": state.get("loan_amount", 0),
     }
     print(f"[node risk_score] score={score:.2f} decision={decision}")
+    replay.record("rule_decision", "rule-engine",
+                  {"customer": state["customer_id"], "decision": decision,
+                   "cibil": cibil_score_val, "note": "deterministic — not the LLM"})
     return {
         "risk_score": risk,
         "decision": decision,  # type: ignore[typeddict-item]
@@ -296,7 +300,16 @@ def explain(state: UnderwritingState) -> UnderwritingState:
         "loan_amount_inr": risk["loan_amount"],
         "policy_criteria": policy["criteria"],
     }
+    replay.record("pii_redact", "declaw-proxy",
+                  {"customer": state["customer_id"], "to": "api.openai.com",
+                   "fields": ["PAN", "Aadhaar", "SSN", "CIBIL"],
+                   "as": "[REDACTED_*] tokens"})
+    replay.record("governance_pack", "declaw",
+                  {"jurisdiction": juris.code, "policy_ref": juris.governance_pack})
     explanation = _explain_sandboxed(payload)
+    replay.record("pii_rehydrate", "declaw-proxy",
+                  {"customer": state["customer_id"],
+                   "note": "originals restored to the agent on the response"})
 
     # The LLM only writes prose; the customer-facing adverse-action notice is
     # shaped deterministically per jurisdiction (US -> ECOA reason codes).
@@ -310,6 +323,9 @@ def explain(state: UnderwritingState) -> UnderwritingState:
         reasons = list(bureau["cibil"]["flags"]) or [
             f"CIBIL {risk['cibil']} below approval threshold"]
         out["adverse_action"] = gov.format_adverse_action(reasons, juris)
+        replay.record("adverse_action", "workflow",
+                      {"customer": state["customer_id"],
+                       "format": juris.adverse_action_format})
     return out
 
 
@@ -328,6 +344,10 @@ def officer_review(state: UnderwritingState) -> UnderwritingState:
     }.get(decision or "decline", gov.RECOMMEND_REVIEW)
     print(f"[node officer_review] {recommendation} — {gov.PENDING_HUMAN_CONFIRMATION} "
           f"(no autonomous sanction; officer signs off)")
+    replay.record("human_gate", "officer",
+                  {"customer": state.get("customer_id"), "recommendation": recommendation,
+                   "status": gov.PENDING_HUMAN_CONFIRMATION,
+                   "note": "binding sanction owned by a human, not the model"})
     notes = (
         f"{recommendation}: rule-engine decision={decision}, "
         f"CIBIL={risk.get('cibil')}, score={risk.get('score', 0):.2f}. "
@@ -389,6 +409,8 @@ def main() -> None:
     print("=== Credit Underwriting (sandboxed, real LLM) ===")
     print(f"Governance: rule engine decides · LLM explains · officer confirms "
           f"every outcome · {gov.governance_banner()}\n")
+    replay.start("01-credit-underwriting", vertical="fintech",
+                 jurisdiction=gov.active_jurisdiction().code)
     graph = build_graph()
 
     print("--- Demo 1: c-003 Rohan Desai (rule engine: DECLINE) ---")
@@ -408,6 +430,10 @@ def main() -> None:
           "(data-egress-sensitive + Tier-2 judge, log_only) and recorded in the audit "
           "trail; the decision is based on real financial signals only. The enforcing "
           "action=block variant is proven in verify_security_primitives.py (check 7).")
+
+    # Emit the replay timeline for the landing-page demo (no-op unless
+    # DECLAW_EMIT_EVENTS is set). Captured from this real sandboxed run.
+    replay.flush()
 
 
 if __name__ == "__main__":

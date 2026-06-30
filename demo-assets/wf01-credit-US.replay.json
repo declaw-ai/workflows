@@ -1,0 +1,211 @@
+{
+  "workflow": "01-credit-underwriting",
+  "vertical": "fintech",
+  "jurisdiction": "US",
+  "event_count": 17,
+  "events": [
+    {
+      "seq": 1,
+      "t_ms": 13378,
+      "event": "rule_decision",
+      "actor": "rule-engine",
+      "detail": {
+        "customer": "c-003",
+        "decision": "decline",
+        "cibil": 541,
+        "note": "deterministic \u2014 not the LLM"
+      }
+    },
+    {
+      "seq": 2,
+      "t_ms": 13379,
+      "event": "pii_redact",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-003",
+        "to": "api.openai.com",
+        "fields": [
+          "PAN",
+          "Aadhaar",
+          "SSN",
+          "CIBIL"
+        ],
+        "as": "[REDACTED_*] tokens"
+      }
+    },
+    {
+      "seq": 3,
+      "t_ms": 13379,
+      "event": "governance_pack",
+      "actor": "declaw",
+      "detail": {
+        "jurisdiction": "US",
+        "policy_ref": "nist-ai-rmf@v1"
+      }
+    },
+    {
+      "seq": 4,
+      "t_ms": 32828,
+      "event": "pii_rehydrate",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-003",
+        "note": "originals restored to the agent on the response"
+      }
+    },
+    {
+      "seq": 5,
+      "t_ms": 32828,
+      "event": "adverse_action",
+      "actor": "workflow",
+      "detail": {
+        "customer": "c-003",
+        "format": "reason_codes"
+      }
+    },
+    {
+      "seq": 6,
+      "t_ms": 32830,
+      "event": "human_gate",
+      "actor": "officer",
+      "detail": {
+        "customer": "c-003",
+        "recommendation": "RECOMMEND_DECLINE",
+        "status": "PENDING_HUMAN_CONFIRMATION",
+        "note": "binding sanction owned by a human, not the model"
+      }
+    },
+    {
+      "seq": 7,
+      "t_ms": 44906,
+      "event": "rule_decision",
+      "actor": "rule-engine",
+      "detail": {
+        "customer": "c-001",
+        "decision": "approve",
+        "cibil": 762,
+        "note": "deterministic \u2014 not the LLM"
+      }
+    },
+    {
+      "seq": 8,
+      "t_ms": 44906,
+      "event": "pii_redact",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-001",
+        "to": "api.openai.com",
+        "fields": [
+          "PAN",
+          "Aadhaar",
+          "SSN",
+          "CIBIL"
+        ],
+        "as": "[REDACTED_*] tokens"
+      }
+    },
+    {
+      "seq": 9,
+      "t_ms": 44906,
+      "event": "governance_pack",
+      "actor": "declaw",
+      "detail": {
+        "jurisdiction": "US",
+        "policy_ref": "nist-ai-rmf@v1"
+      }
+    },
+    {
+      "seq": 10,
+      "t_ms": 62330,
+      "event": "pii_rehydrate",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-001",
+        "note": "originals restored to the agent on the response"
+      }
+    },
+    {
+      "seq": 11,
+      "t_ms": 62332,
+      "event": "human_gate",
+      "actor": "officer",
+      "detail": {
+        "customer": "c-001",
+        "recommendation": "RECOMMEND_APPROVE",
+        "status": "PENDING_HUMAN_CONFIRMATION",
+        "note": "binding sanction owned by a human, not the model"
+      }
+    },
+    {
+      "seq": 12,
+      "t_ms": 74609,
+      "event": "rule_decision",
+      "actor": "rule-engine",
+      "detail": {
+        "customer": "c-002",
+        "decision": "borderline",
+        "cibil": 688,
+        "note": "deterministic \u2014 not the LLM"
+      }
+    },
+    {
+      "seq": 13,
+      "t_ms": 74610,
+      "event": "pii_redact",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-002",
+        "to": "api.openai.com",
+        "fields": [
+          "PAN",
+          "Aadhaar",
+          "SSN",
+          "CIBIL"
+        ],
+        "as": "[REDACTED_*] tokens"
+      }
+    },
+    {
+      "seq": 14,
+      "t_ms": 74610,
+      "event": "governance_pack",
+      "actor": "declaw",
+      "detail": {
+        "jurisdiction": "US",
+        "policy_ref": "nist-ai-rmf@v1"
+      }
+    },
+    {
+      "seq": 15,
+      "t_ms": 92119,
+      "event": "pii_rehydrate",
+      "actor": "declaw-proxy",
+      "detail": {
+        "customer": "c-002",
+        "note": "originals restored to the agent on the response"
+      }
+    },
+    {
+      "seq": 16,
+      "t_ms": 92119,
+      "event": "adverse_action",
+      "actor": "workflow",
+      "detail": {
+        "customer": "c-002",
+        "format": "reason_codes"
+      }
+    },
+    {
+      "seq": 17,
+      "t_ms": 92120,
+      "event": "human_gate",
+      "actor": "officer",
+      "detail": {
+        "customer": "c-002",
+        "recommendation": "RECOMMEND_REVIEW",
+        "status": "PENDING_HUMAN_CONFIRMATION",
+        "note": "binding sanction owned by a human, not the model"
+      }
+    }
+  ]
+}
