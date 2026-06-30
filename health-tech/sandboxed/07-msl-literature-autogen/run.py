@@ -148,11 +148,16 @@ MSL_SCRIPT = textwrap.dedent("""
         for m in result.messages:
             if getattr(m, 'source', None) == 'writer':
                 c = getattr(m, 'content', '')
-                if isinstance(c, str) and 'DRAFT_READY_FOR_MLR_REVIEW' in c:
-                    brief = c
+                if isinstance(c, str) and c.strip():
+                    brief = c   # last writer message — captured deterministically,
+                                # NOT gated on the LLM emitting a token
+        # Deterministic draft stamp in code: the artifact is held for MLR review
+        # regardless of what the model wrote (mirrors build_837 in health-03).
+        brief_draft = {'status': DRAFT_PENDING_REVIEW, 'reviewer': REVIEWER_MLR,
+                       'content': brief}
         transcript = [f\"[{getattr(m,'source','?')}] {str(getattr(m,'content',''))[:500]}\" for m in result.messages]
         with open('/tmp/out.json','w') as f:
-            json.dump({'brief': brief, 'transcript': transcript}, f)
+            json.dump({'brief_draft': brief_draft, 'transcript': transcript}, f)
 
     asyncio.run(main())
 """)
@@ -187,11 +192,14 @@ def main() -> None:
     print("--- Transcript ---")
     for line in out.get("transcript", []):
         print(line)
-    print("\n--- DRAFT MLR brief (pending MLR review) ---")
-    print(out.get("brief") or "(no writer message captured)")
-    print(f"\n[gate] This brief is {gov.DRAFT_PENDING_REVIEW}: a human "
-          f"{gov.REVIEWER_MLR} must approve it before any external use or "
-          "publication. Nothing is published autonomously.")
+    brief_draft = out.get("brief_draft", {})
+    status = brief_draft.get("status", gov.DRAFT_PENDING_REVIEW)
+    reviewer = brief_draft.get("reviewer", gov.REVIEWER_MLR)
+    print(f"\n--- MLR brief — status={status} (deterministic code stamp; "
+          f"owner: {reviewer}) ---")
+    print(brief_draft.get("content") or "(no writer message captured)")
+    print(f"\n[gate] This brief is {status}: a human {reviewer} must approve it "
+          "before any external use or publication. Nothing is published autonomously.")
 
 
 if __name__ == "__main__":

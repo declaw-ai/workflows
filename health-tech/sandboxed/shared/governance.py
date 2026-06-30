@@ -25,6 +25,7 @@ RECOMMEND_DENY = "RECOMMEND_DENY"
 RECOMMEND_REVIEW = "RECOMMEND_REVIEW"
 PENDING_HUMAN_CONFIRMATION = "PENDING_HUMAN_CONFIRMATION"
 DRAFT_PENDING_REVIEW = "DRAFT_PENDING_REVIEW"
+DRAFT_READY_FOR_MLR_REVIEW = "DRAFT_READY_FOR_MLR_REVIEW"
 
 # ---------- Who the licensed human reviewer is (the health overlay) ----------
 REVIEWER_CLINICIAN = "licensed clinician"          # prior-auth / clinical decisions
@@ -121,3 +122,21 @@ def governance_banner(j: HealthJurisdiction | None = None) -> str:
     if j.phi_residency:
         bits.append(f"phi_residency={j.phi_residency}")
     return " | ".join(bits)
+
+
+# ---------- Enforcing primitives (deterministic gates — the shared core) ----------
+# Make the human gate non-bypassable in code, not a prompt instruction or an
+# LLM-emitted token. Route every workflow that owns a material clinical/coverage/
+# coding decision through one of these so enforcement quality is uniform.
+
+def officer_gate(recommendation: str, *, reviewer: str = REVIEWER_CLINICIAN, **detail) -> dict:
+    """Stamp a recommendation as held for a licensed human reviewer. The binding
+    clinical/coverage/coding decision is owned by the human, never the LLM."""
+    return {"status": PENDING_HUMAN_CONFIRMATION, "recommendation": recommendation,
+            "reviewer": reviewer, **detail}
+
+
+def require_human(content, *, reviewer: str, status: str = DRAFT_PENDING_REVIEW, **detail) -> dict:
+    """Wrap an LLM-produced artifact as a DRAFT held for a named human reviewer —
+    a deterministic stamp on the artifact in code, NOT an LLM-emitted token."""
+    return {"status": status, "reviewer": reviewer, "content": content, **detail}

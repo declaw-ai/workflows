@@ -176,15 +176,20 @@ CREWAI_SCRIPT = textwrap.dedent("""
         allow_delegation=False, llm=llm,
     )
     human_review = Agent(
-        role="Human Claims Adjudicator",
+        role="Human Adjudicator (simulated gate)",
         goal=f"Take the triage recommendation and present it for human sign-off. "
-             f"You own the binding outcome: every recommendation — including "
-             f"{RECOMMEND_APPROVE} (payout) and {RECOMMEND_DECLINE} (denial) — is "
-             f"held {PENDING_HUMAN_CONFIRMATION}. Output {PENDING_HUMAN_CONFIRMATION} "
-             f"prominently. Nothing is paid or denied autonomously.",
-        backstory="Senior claims adjudicator. This is a mandatory human gate. No "
-                  "payout is disbursed and no claim is denied without explicit "
-                  "human confirmation beyond this node — the crew only recommends.",
+             f"This node is a SIMULATED stand-in for a real human adjudicator — "
+             f"in production a person owns the binding outcome. Every "
+             f"recommendation — including {RECOMMEND_APPROVE} (payout) and "
+             f"{RECOMMEND_DECLINE} (denial) — is held {PENDING_HUMAN_CONFIRMATION}. "
+             f"Output {PENDING_HUMAN_CONFIRMATION} prominently. Nothing is paid or "
+             f"denied autonomously.",
+        backstory="An LLM agent that SIMULATES the human-adjudication gate; it "
+                  "stands in for a real human adjudicator. In production a person "
+                  "owns the payout/denial — there is no payout/denial code path "
+                  "here. No payout is disbursed and no claim is denied without "
+                  "explicit human confirmation beyond this node — the crew only "
+                  "recommends.",
         allow_delegation=False, llm=llm,
     )
 
@@ -331,6 +336,9 @@ def main() -> None:
           f"only RECOMMENDS ({gov.RECOMMEND_APPROVE}/{gov.RECOMMEND_REVIEW}/"
           f"{gov.RECOMMEND_DECLINE}); a human adjudicator owns the payout or "
           "the denial. Nothing is paid or denied autonomously.")
+    print("[note] The 'Human Adjudicator' crew node is a SIMULATED gate (an LLM "
+          "agent standing in for a real adjudicator); in production a person owns "
+          "the payout/denial — there is no payout/denial code path in this demo.")
 
 
 if __name__ == "__main__":

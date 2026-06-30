@@ -37,6 +37,7 @@ from shared.declaw_helpers import (  # noqa: E402
     run_python_in_sandbox,
     llm_envs,
 )
+from shared import governance as gov  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # AutoGen script — runs INSIDE the microVM
@@ -56,6 +57,13 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
     CUSTOMER = inp["customer"]
     TRANSACTIONS = inp["transactions"]
     SANCTIONED = inp["sanctioned_counterparties"]
+
+    # Governance label injected from shared.governance on the host (the sandbox
+    # cannot import the shared module). The crew DRAFTS only; the termination
+    # token below is the shared constant, so the in-sandbox token and the
+    # host-side draft stamp cannot drift apart.
+    GOV = inp["gov"]
+    DRAFT_READY_FOR_OFFICER_REVIEW = GOV["DRAFT_READY_FOR_OFFICER_REVIEW"]
 
     # ---- In-sandbox tool functions ----------------------------------------
 
@@ -155,14 +163,14 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
                 "FATF Rec 20: (1) all mandatory fields present, (2) no speculative "
                 "language, (3) objective factual basis stated, (4) BSA amount "
                 "threshold met. When satisfied, output the final draft narrative "
-                "then append DRAFT_READY_FOR_OFFICER_REVIEW on a line by itself."
+                f"then append {DRAFT_READY_FOR_OFFICER_REVIEW} on a line by itself."
             ),
         )
 
         team = RoundRobinGroupChat(
             [triager, investigator, drafter, reviewer],
             termination_condition=(
-                TextMentionTermination("DRAFT_READY_FOR_OFFICER_REVIEW")
+                TextMentionTermination(DRAFT_READY_FOR_OFFICER_REVIEW)
                 | MaxMessageTermination(20)
             ),
         )
@@ -217,6 +225,11 @@ def _build_payload(customer_id: str) -> dict:
         },
         "transactions": txns,
         "sanctioned_counterparties": SANCTIONED_COUNTERPARTIES,
+        # Governance label — the in-sandbox AutoGen termination token is the
+        # shared constant, so it can't drift from the host-side draft stamp.
+        "gov": {
+            "DRAFT_READY_FOR_OFFICER_REVIEW": gov.DRAFT_READY_FOR_OFFICER_REVIEW,
+        },
     }
 
 
@@ -251,9 +264,19 @@ def main() -> None:
         print(line)
 
     print("\n" + "=" * 70)
-    print("FINAL SAR NARRATIVE (Compliance-Reviewer, PII tokenised)")
+    print("DRAFT SAR NARRATIVE (for officer review)")
     print("=" * 70)
-    print(out.get("final_sar") or "(no SAR narrative captured)")
+    # Deterministic draft stamp in the HOST — the draft status is a code stamp,
+    # not just the LLM-emitted termination token.
+    final_sar = out.get("final_sar") or "(no SAR narrative captured)"
+    stamped = gov.require_human(
+        final_sar,
+        reviewer="compliance officer",
+        status=gov.DRAFT_READY_FOR_OFFICER_REVIEW,
+    )
+    print(f"[status]   {stamped['status']}")
+    print(f"[reviewer] {stamped['reviewer']}")
+    print(stamped["content"])
     print(
         "\n[OK] SAR narrative uses [REDACTED_*] tokens — "
         "PII never reached OpenAI in cleartext."
