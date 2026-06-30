@@ -6,9 +6,13 @@ decisioning regulation actually lines up across the geographies we target
 (India + US + EU/UK + Singapore + UAE): the **core principles converge**, and the
 genuine differences are a **small, swappable overlay** — not a different workflow.
 
-The same convergent core maps 1:1 onto declaw primitives, so building it is also
-the strongest declaw showcase: the agent stays the same, you **swap one policy
-reference** and get region-appropriate governance.
+Most of the convergent core maps onto declaw primitives (egress allowlist, PII
+redaction, governance packs, audit), so building it is also the strongest declaw
+showcase: the agent stays the same, you **swap one policy reference** and get
+region-appropriate governance. The **human-in-the-loop step is the exception** —
+it is a **workflow-layer control**, not a declaw primitive (declaw has no
+approval-gate primitive today; see §1a). declaw's role there is to enforce the
+*boundary* (the agent can't autonomously execute the action) and to *audit* it.
 
 ---
 
@@ -22,23 +26,50 @@ binding, customer-impacting decision.** Two safe shapes:
 2. the LLM **proposes/drafts**, and a **human gate in code** owns the action.
 
 Every target regulator converges on the same six requirements for AI near a
-material decision. Each is a declaw primitive — so the core is non-bypassable,
-not advisory:
+material decision. Most are enforced by a declaw primitive; the human-in-the-loop
+rows are a **workflow-layer control** that declaw *complements* (enforce-boundary
++ audit), not a declaw feature:
 
-| Convergent requirement | declaw primitive that enforces/evidences it |
-|---|---|
-| Institution stays accountable; no full delegation of a material decision to an opaque model | the **human gate** (`PENDING_HUMAN_APPROVAL` / officer-confirm node) |
-| Human-in-the-loop / oversight on high-impact decisions | non-bypassable human node in the graph |
-| Explainability + adverse-action reason for the customer | structured explanation output + **audit** record |
-| Fairness / bias discipline | governance-pack attestation (`nist-ai-rmf@v1`, `eu-ai-act@v1`) |
-| Auditability + record-keeping | the **audit trail** (compliance evidence) |
-| Data privacy + residency | **egress allowlist** pinned in-region + **credential vault** (keys/PII never leave) |
+| Convergent requirement | How it's enforced / evidenced | Layer |
+|---|---|---|
+| Institution stays accountable; no full delegation of a material decision to an opaque model | **workflow** human gate (`PENDING_HUMAN_CONFIRMATION` / officer-confirm node); declaw makes autonomous execution impossible (egress/command denial) + audits | workflow + declaw boundary |
+| Human-in-the-loop / oversight on high-impact decisions | **workflow** human node; declaw has no approval-gate primitive (see §1a) | workflow |
+| Explainability + adverse-action reason for the customer | structured explanation output + **audit** record | workflow + declaw |
+| Fairness / bias discipline | governance-pack attestation (`nist-ai-rmf@v1`, `eu-ai-act@v1`) | **declaw** |
+| Auditability + record-keeping | the **audit trail** (compliance evidence) | **declaw** |
+| Data privacy + residency | **egress allowlist** pinned in-region + **credential vault** (keys/PII never leave) | **declaw** |
 
 > Evidence note: principle-level convergence is well-supported (e.g. KPMG's
 > cross-jurisdiction analysis: alignment on human-centricity, transparency,
 > accountability, robustness/safety). The "regulatory modes diverge by
 > epistemology" counter-thesis did **not** survive adversarial review. Bind the
 > design to genuine convergence — not to a "Brussels effect" assumption.
+
+### 1a. How the human gate actually works (do not overclaim)
+
+The human gate is a **workflow/orchestration control**, not a declaw product
+feature. In these workflows it is "stop before the binding action + stamp
+`PENDING_HUMAN_CONFIRMATION`": a graph node that ends (langgraph), an agent that
+*simulates* the reviewer (CrewAI — labelled "simulated gate"), or a deterministic
+status stamp (`officer_gate` / `require_human` just return a record). There is **no
+approve → notify → resume loop** waiting on a real human event, and the binding
+action simply has no code path.
+
+**declaw has no HITL/approval-gate primitive today** — and says so itself: its
+governance packs classify human-in-the-loop as *advisory* ("no spawn-pause or
+approval-gate primitive today"; "approval-wait primitive not yet present"). What
+declaw *does* provide is adjacent and complementary:
+- **Boundary enforcement** — the egress allowlist + governance-pack command
+  denials mean an action that manifests as a disallowed egress/command **cannot
+  execute autonomously** (deny-based, not approval-based).
+- **Audit** — every action/denial is recorded as evidence.
+- **`pause()` / `resume()` + snapshots** — sandbox lifecycle building blocks that
+  *could* underpin a future approval gate, but are not one.
+
+So the honest claim is: **declaw makes autonomous execution impossible and records
+it; the human approval is your workflow.** Do not describe declaw as a
+"human-gate" or "HITL" layer. (A real approval-gate primitive is a declaw roadmap
+item, per its own pack manifests.)
 
 ---
 
@@ -139,7 +170,7 @@ primitive still appears, and three gain new framing:
 | Volumes | ✅ unchanged | wf05 |
 | Audit trail | ✅ unchanged + **now = compliance evidence** | all policies; human-gate records |
 | FS isolation / metadata block | ✅ unchanged | `verify_security_primitives.py` |
-| **Human gate** (new emphasis) | ➕ new showcase | wf01/14 pattern across decision workflows |
+| **Human gate** | ⚠️ **workflow-layer, not a declaw capability** (see §1a) — declaw complements it via boundary enforcement + audit | wf01/14 orchestration pattern |
 
 Closing the loop: after the remediation, the verify suites + a representative
 workflow run are re-executed live so "still showcased" is proven, not asserted.
@@ -172,10 +203,13 @@ risk. `10` is fine to feature once its sandboxed variant is governed.
 
 ## 5. Positioning
 
-declaw is the **non-bypassable governance + human-gate + audit + data-residency
-layer** that lets you put an LLM *near* a regulated decision in any jurisdiction —
-egress hygiene is one pillar of that, not the whole pitch. The convergent core is
-the product; the jurisdiction overlay is a one-line `policy_ref` swap.
+declaw is the **non-bypassable boundary + governance + audit + data-residency
+layer** that lets you put an LLM *near* a regulated decision in any jurisdiction:
+it makes autonomous execution impossible (egress/command denial), redacts PII,
+and records everything — so your **workflow's** human-in-the-loop step is the
+decision owner and declaw guarantees the agent can't act around it. (declaw does
+not itself run the human gate — see §1a.) The jurisdiction overlay is a one-line
+`policy_ref` swap.
 
 > This is engineering/design guidance informed by regulatory research, **not legal
 > advice**. The binding specifics (EU AI Act high-risk obligations + timeline,
