@@ -150,18 +150,23 @@ def _mock(kind: str, allow_domains: list[str], **extra):
     return {"_mock": True, "kind": kind, "allow_out": allow_domains, **extra}
 
 
-def lending_llm_policy(allow_domains: list[str]):
+def lending_llm_policy(allow_domains: list[str], governance_pack: str | None = None):
     """Policy for an LLM-call sandbox in lending/underwriting.
 
     Redact PII outbound, rehydrate on response — agent code reads back
     the original PAN/Aadhaar/SSN/CIBIL transparently, so the sandboxed
     workflow produces the same decision text as the baseline (only the
-    egress path changes). Redaction evidence lives in the audit log."""
+    egress path changes). Redaction evidence lives in the audit log.
+
+    `governance_pack` is the jurisdiction overlay (see shared/governance.py):
+    pass e.g. "eu-ai-act@v1" / "nist-ai-rmf@v1" to attach the region's OPA pack
+    — the same agent, made region-appropriate by swapping one policy_ref."""
     if not DECLAW_AVAILABLE:
-        return _mock("lending_llm_policy", allow_domains)
+        return _mock("lending_llm_policy", allow_domains, governance_pack=governance_pack)
     d = _import_declaw()
     return d["SecurityPolicy"](**_base_policy_kwargs(
-        "redact", allow_domains, rehydrate=True, enable_injection=False))
+        "redact", allow_domains, rehydrate=True, enable_injection=False,
+        governance_pack=governance_pack))
 
 
 def kyc_document_policy(allow_domains: list[str]):

@@ -1,18 +1,30 @@
 """Credit Underwriting workflow (LangGraph) — sandboxed with Declaw, real GPT-4.1.
 
+Governance posture (see ../../GOVERNANCE.md): the binding credit decision is made
+by a **deterministic rule engine** (`_score_to_decision`), the **LLM only writes
+the explanation**, and **every outcome — approve included — routes through an
+officer-confirmation gate** before it is binding. That is the RBI/SR-11-7/EU-AI-Act
+"don't delegate a material decision to an opaque model" shape, and it holds in
+every target jurisdiction. The jurisdiction itself is a thin overlay
+(DECLAW_JURISDICTION): it sets the adverse-action format (US ECOA reason codes vs
+reasoned explanation), the GDPR Art. 22 human-review affordance, and the declaw
+OPA governance pack attached to the LLM sandbox (one `policy_ref` swap).
+
 Two sandboxed steps:
   1. statement_parse  — wrapped in kyc_document_policy (PII redact+rehydrate,
      injection scanned with the data-egress-sensitive posture + Tier-2 Gemma
      judge at threshold 0.5) so an injected memo in the bank statement is
      detected and recorded in the audit trail (action=log_only here; the
      enforcing action=block variant is proven in verify_security_primitives.py).
-  2. explain          — wrapped in lending_llm_policy (PII redact+rehydrate)
-     so raw PAN/Aadhaar/SSN/CIBIL never reach OpenAI; the proxy replaces them
-     with [REDACTED_*] tokens, then rehydrates them in the response.
+  2. explain          — wrapped in lending_llm_policy (PII redact+rehydrate +
+     the jurisdiction's governance pack) so raw PAN/Aadhaar/SSN/CIBIL never reach
+     OpenAI; the proxy replaces them with [REDACTED_*] tokens, then rehydrates
+     them in the response.
 
-Demo recipe (same as baseline to make the contrast obvious):
-  c-003 -> DECLINE, explanation contains redacted PII
-  c-001 -> APPROVE
+Demo recipe:
+  c-003 -> rule engine DECLINEs; LLM writes a jurisdiction-formatted adverse-
+           action notice; pending officer confirmation
+  c-001 -> rule engine APPROVEs; pending officer confirmation (not auto-sanctioned)
   c-002 -> adversarial memo in statement is DETECTED + audited by kyc_document_policy
 """
 from __future__ import annotations
@@ -37,6 +49,7 @@ from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, LLM_PIP, lending_llm_policy, kyc_document_policy,
     llm_envs, run_python_in_sandbox,
 )
+from shared import governance as gov  # noqa: E402
 
 
 # ---------- State ----------
@@ -52,6 +65,8 @@ class UnderwritingState(TypedDict, total=False):
     risk_score: dict
     decision: Literal["approve", "decline", "borderline"]
     explanation: str
+    adverse_action: dict          # jurisdiction-formatted reason(s) for the customer
+    status: str                   # gate state: PENDING_HUMAN_CONFIRMATION until an officer signs off
     human_review_notes: str
     audit_log: Annotated[list[dict], "append-only audit trail"]
 
@@ -135,7 +150,12 @@ def _parse_statement_sandboxed(stmt: dict) -> dict:
 
 
 def _explain_sandboxed(payload: dict) -> str:
-    pol = lending_llm_policy(allow_domains=LLM_DOMAINS)
+    # Jurisdiction overlay: attach the region's OPA governance pack to the LLM
+    # sandbox — the same agent, made region-appropriate by one policy_ref swap.
+    pol = lending_llm_policy(
+        allow_domains=LLM_DOMAINS,
+        governance_pack=gov.governance_pack(),
+    )
     out = run_python_in_sandbox(
         "lending-explain-llm", EXPLAIN_SCRIPT, pol,
         payload=payload, pip_packages=LLM_PIP, envs=llm_envs(),
@@ -257,8 +277,11 @@ def explain(state: UnderwritingState) -> UnderwritingState:
     risk = state["risk_score"]
     policy = LENDING_POLICIES[state["policy_key"]]
 
+    juris = gov.active_jurisdiction()
+    print(f"[node explain] {gov.governance_banner(juris)}")
     print("[node explain] entering lending_llm_policy sandbox "
-          "(PII redacted+rehydrated at proxy — PAN/Aadhaar/SSN/CIBIL never reach OpenAI)")
+          "(PII redacted+rehydrated at proxy — PAN/Aadhaar/SSN/CIBIL never reach "
+          f"OpenAI; governance pack {juris.governance_pack} attached)")
 
     payload = {
         "customer_name": profile["name"],
@@ -274,34 +297,49 @@ def explain(state: UnderwritingState) -> UnderwritingState:
         "policy_criteria": policy["criteria"],
     }
     explanation = _explain_sandboxed(payload)
-    return {
+
+    # The LLM only writes prose; the customer-facing adverse-action notice is
+    # shaped deterministically per jurisdiction (US -> ECOA reason codes).
+    out: UnderwritingState = {
         "explanation": explanation,
-        "audit_log": [{"node": "explain", "sandboxed": True, "model": "gpt-4.1"}],
+        "audit_log": [{"node": "explain", "sandboxed": True, "model": "gpt-4.1",
+                       "jurisdiction": juris.code,
+                       "governance_pack": juris.governance_pack}],
     }
+    if risk["decision"] in ("decline", "borderline"):
+        reasons = list(bureau["cibil"]["flags"]) or [
+            f"CIBIL {risk['cibil']} below approval threshold"]
+        out["adverse_action"] = gov.format_adverse_action(reasons, juris)
+    return out
 
 
-def human_review(state: UnderwritingState) -> UnderwritingState:
+def officer_review(state: UnderwritingState) -> UnderwritingState:
+    """Mandatory human gate — EVERY credit outcome (approve included) is held
+    PENDING_HUMAN_CONFIRMATION here. The rule engine produced the recommendation
+    and the LLM wrote the explanation; an officer owns the binding sanction. No
+    funds are disbursed autonomously — that is the non-delegation requirement
+    common to RBI SBR, US SR 11-7/ECOA, and the EU AI Act."""
     decision = state.get("decision")
     risk = state.get("risk_score", {})
-    print(f"[node human_review] flagged for review — decision={decision}")
+    recommendation = {
+        "approve": gov.RECOMMEND_APPROVE,
+        "decline": gov.RECOMMEND_DECLINE,
+        "borderline": gov.RECOMMEND_REVIEW,
+    }.get(decision or "decline", gov.RECOMMEND_REVIEW)
+    print(f"[node officer_review] {recommendation} — {gov.PENDING_HUMAN_CONFIRMATION} "
+          f"(no autonomous sanction; officer signs off)")
     notes = (
-        f"Auto-routed for human review: decision={decision}, "
+        f"{recommendation}: rule-engine decision={decision}, "
         f"CIBIL={risk.get('cibil')}, score={risk.get('score', 0):.2f}. "
-        f"Reviewer should verify income docs and re-check bureau flags."
+        f"Officer to confirm before the decision is binding "
+        f"(verify income docs, re-check bureau flags)."
     )
     return {
+        "status": gov.PENDING_HUMAN_CONFIRMATION,
         "human_review_notes": notes,
-        "audit_log": [{"node": "human_review", "triggered": True}],
+        "audit_log": [{"node": "officer_review", "recommendation": recommendation,
+                       "status": gov.PENDING_HUMAN_CONFIRMATION}],
     }
-
-
-# ---------- Routing ----------
-
-def route_after_explain(state: UnderwritingState) -> str:
-    decision = state.get("decision", "decline")
-    if decision in ("decline", "borderline"):
-        return "human_review"
-    return END
 
 
 # ---------- Graph ----------
@@ -314,7 +352,7 @@ def build_graph():
     g.add_node("alt_data", alt_data)
     g.add_node("risk_score", risk_score)
     g.add_node("explain", explain)
-    g.add_node("human_review", human_review)
+    g.add_node("officer_review", officer_review)
 
     g.add_edge(START, "gather")
     g.add_edge("gather", "bureau_pull")
@@ -322,11 +360,9 @@ def build_graph():
     g.add_edge("statement_parse", "alt_data")
     g.add_edge("alt_data", "risk_score")
     g.add_edge("risk_score", "explain")
-    g.add_conditional_edges(
-        "explain", route_after_explain,
-        {"human_review": "human_review", END: END},
-    )
-    g.add_edge("human_review", END)
+    # Every outcome — approve included — passes through the officer gate.
+    g.add_edge("explain", "officer_review")
+    g.add_edge("officer_review", END)
     return g.compile(checkpointer=MemorySaver())
 
 
@@ -340,26 +376,34 @@ def _run_demo(graph, customer_id: str, loan_amount: int, policy_key: str, thread
     return graph.invoke(initial, config=config)
 
 
+def _print_outcome(r: UnderwritingState) -> None:
+    print(f"Rule-engine decision: {r.get('decision')}  ->  {r.get('status', '(no gate)')}")
+    if r.get("human_review_notes"):
+        print(f"Officer gate:         {r['human_review_notes']}")
+    if r.get("adverse_action"):
+        print(f"Adverse-action:       {json.dumps(r['adverse_action'])}")
+    print(f"LLM explanation:      {r.get('explanation', '')[:280]}")
+
+
 def main() -> None:
-    print("=== Credit Underwriting (sandboxed, real LLM) ===\n")
+    print("=== Credit Underwriting (sandboxed, real LLM) ===")
+    print(f"Governance: rule engine decides · LLM explains · officer confirms "
+          f"every outcome · {gov.governance_banner()}\n")
     graph = build_graph()
 
-    print("--- Demo 1: c-003 Rohan Desai (expected: DECLINE) ---")
+    print("--- Demo 1: c-003 Rohan Desai (rule engine: DECLINE) ---")
     r1 = _run_demo(graph, "c-003", 200000, "personal_loan_india", "uw-sbx-c003")
-    print(f"Decision:    {r1.get('decision')}")
-    print(f"Explanation: {r1.get('explanation', '')[:300]}")
-    if r1.get("human_review_notes"):
-        print(f"Review:      {r1['human_review_notes']}")
+    _print_outcome(r1)
 
-    print("\n--- Demo 2: c-001 Aarav Sharma (expected: APPROVE) ---")
+    print("\n--- Demo 2: c-001 Aarav Sharma (rule engine: APPROVE — still officer-gated) ---")
     r2 = _run_demo(graph, "c-001", 500000, "personal_loan_india", "uw-sbx-c001")
-    print(f"Decision:    {r2.get('decision')}")
-    print(f"Explanation: {r2.get('explanation', '')[:300]}")
+    _print_outcome(r2)
+    print("[NOTE] approve is NOT auto-sanctioned — it is held "
+          f"{gov.PENDING_HUMAN_CONFIRMATION} for officer sign-off, same as a decline.")
 
     print("\n--- Demo 3: c-002 Priya Iyer (adversarial memo DETECTED by kyc_document_policy) ---")
     r3 = _run_demo(graph, "c-002", 1000000, "smb_working_capital_global", "uw-sbx-c002")
-    print(f"Decision:    {r3.get('decision')}")
-    print(f"Explanation: {r3.get('explanation', '')[:300]}")
+    _print_outcome(r3)
     print("[NOTE] Injection memo in c-002 statement was detected by kyc_document_policy "
           "(data-egress-sensitive + Tier-2 judge, log_only) and recorded in the audit "
           "trail; the decision is based on real financial signals only. The enforcing "
