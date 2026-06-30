@@ -91,17 +91,20 @@ own rootfs, and its own network namespace. Concretely:
 
 ### Bottom line for a fintech team
 
-Declaw is the **non-bypassable governance + human-gate + audit + data-residency
-layer** that lets you put an LLM *near* a regulated decision at all — safer egress
-is one pillar of that, not the whole story. See `../GOVERNANCE.md` for the
-convergent-core + jurisdiction-overlay model.
+Declaw is the **non-bypassable boundary + governance + audit + data-residency
+layer** that lets you put an LLM *near* a regulated decision at all — it makes
+autonomous execution impossible (egress/command denial), redacts PII, and records
+everything; safer egress is one pillar, not the whole story. See `../GOVERNANCE.md`
+for the convergent-core + jurisdiction-overlay model.
 
 - **The LLM never owns the binding decision.** Across the decision workflows a
   deterministic rule decides (or the LLM only drafts/recommends/explains), and a
-  **human gate in code** owns the material action — approve paths included
-  (`PENDING_HUMAN_CONFIRMATION`). That is the RBI SBR / US SR-11-7+ECOA / EU-AI-Act
-  non-delegation requirement, and it is what makes these safe to run near a
-  regulated decision. The PII/injection/egress workflows (where the LLM only
+  **human gate in the workflow code** owns the material action — approve paths
+  included (`PENDING_HUMAN_CONFIRMATION`). That is the RBI SBR / US SR-11-7+ECOA /
+  EU-AI-Act non-delegation requirement. NB: the human gate is a **workflow-layer
+  control** (declaw has no approval-gate primitive today — see `../GOVERNANCE.md`
+  §1a); declaw's role is to enforce the boundary so the agent can't act around the
+  gate, and to audit it. The PII/injection/egress workflows (where the LLM only
   explains, e.g. 16 fraud-explainer) keep the "same output, safer egress" property.
 - **Governance is chosen per policy, and per jurisdiction**, not per workflow.
   PII action `redact`→`block` is a one-line edit; the **jurisdiction overlay**
