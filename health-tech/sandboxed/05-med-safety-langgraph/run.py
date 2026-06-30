@@ -1,5 +1,10 @@
 """W5 — Medication Safety Copilot, sandboxed with declaw.
 
+Governance posture (see shared/governance.py): this is a drug-interaction copilot
+producing an ADVISORY (decision-support) only. The safety advisory is framed as a
+RECOMMEND_REVIEW for a licensed clinician (REVIEWER_CLINICIAN), who owns the
+prescribing decision. Advisory only — no hard gate.
+
 Same LangGraph orchestration as the baseline, but every node that touches
 the network runs inside a microVM with egress locked to the allowlist
 {api.openai.com, rxnav.nlm.nih.gov, api.fda.gov}. PHI in the LLM-call step
@@ -30,6 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
 from shared.mock_phi import PATIENTS  # noqa: E402
+from shared import governance as gov  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
     HEALTHCARE_API_DOMAINS, LLM_DOMAINS, healthcare_multi_api_policy,
     llm_envs, run_python_in_sandbox,
@@ -97,24 +103,34 @@ SYNTHESIZE_SCRIPT = textwrap.dedent("""
     import json
     from openai import OpenAI
     with open('/tmp/in.json') as f: inp = json.load(f)
+    # Governance labels injected from shared.governance on the host (the sandbox
+    # cannot import the shared module). The advisory is DECISION-SUPPORT only; a
+    # licensed clinician owns the prescribing decision.
+    GOV = inp.get('gov', {})
     c = OpenAI()
     r = c.chat.completions.create(
         model='gpt-4.1',
         messages=[
             {'role':'system','content':
-             'You are a clinical pharmacist. Given a patient record, a '
-             'proposed new drug, FDA-label interaction text for each drug, '
-             'and reported adverse-event counts, produce a JSON safety '
-             'advisory with keys: risk_level (low|moderate|high), '
-             'interaction_summary, top_adverse_events, recommendation. '
+             'You are a clinical pharmacist producing DECISION-SUPPORT only — '
+             'NOT a prescribing decision. Given a patient record, a proposed new '
+             'drug, FDA-label interaction text for each drug, and reported '
+             'adverse-event counts, produce a JSON safety advisory with keys: '
+             'risk_level (low|moderate|high), interaction_summary, '
+             'top_adverse_events, recommendation. The recommendation is advisory '
+             'for a licensed clinician who OWNS the prescribing decision. '
              'Be terse. Respond with a single JSON object.'},
             {'role':'user','content': json.dumps(inp)},
         ],
         response_format={'type': 'json_object'},
         max_completion_tokens=600,
     )
+    advisory = json.loads(r.choices[0].message.content)
+    # Stamp the advisory as decision-support owned by a licensed clinician.
+    advisory['status'] = GOV.get('RECOMMEND_REVIEW', 'RECOMMEND_REVIEW')
+    advisory['decision_owner'] = GOV.get('REVIEWER_CLINICIAN', 'licensed clinician')
     with open('/tmp/out.json','w') as f:
-        json.dump({'advisory': json.loads(r.choices[0].message.content)}, f)
+        json.dump({'advisory': advisory}, f)
 """)
 
 
@@ -162,6 +178,13 @@ def synthesize(state: MedSafetyState) -> MedSafetyState:
         "proposed_drug": state["candidate_drug"],
         "fda_label_interactions": state["interactions"],
         "openfda_adverse_events": state["adverse_events"],
+        # Governance labels — the advisory is decision-support; a licensed
+        # clinician owns the prescribing decision (the sandbox can't import
+        # shared.governance).
+        "gov": {
+            "RECOMMEND_REVIEW": gov.RECOMMEND_REVIEW,
+            "REVIEWER_CLINICIAN": gov.REVIEWER_CLINICIAN,
+        },
     }
     print("[synthesize] sandbox — gpt-4.1 with PHI redaction + rehydration")
     out = run_python_in_sandbox(
@@ -190,6 +213,9 @@ def build_graph():
 def main() -> None:
     initial = {"patient_id": "p-001", "candidate_drug": "semaglutide"}
     print("=== Med Safety Copilot (sandboxed, multi-API, 3 microVMs) ===")
+    print(f"governance: {gov.governance_banner()}")
+    print(f"Advisory is decision-support for a {gov.REVIEWER_CLINICIAN}; the "
+          "clinician owns the prescribing decision (advisory, not a gate).")
     print(f"patient={initial['patient_id']}  proposed={initial['candidate_drug']}")
     print(f"allow_out={LLM_DOMAINS + HEALTHCARE_API_DOMAINS}\n")
     config = {"configurable": {"thread_id": "med-safety-sbx-1"}}
@@ -197,8 +223,10 @@ def main() -> None:
     print("\n--- Tool trace ---")
     for t in result.get("trace", []):
         print(" ", t)
-    print("\n--- Safety advisory (gpt-4.1 via declaw proxy) ---")
+    print("\n--- Safety advisory (DECISION-SUPPORT — clinician owns prescribing) ---")
     print(json.dumps(result.get("advisory", {}), indent=2))
+    print(f"\n[note] This advisory is decision-support only; a {gov.REVIEWER_CLINICIAN} "
+          "owns the prescribing decision. Nothing is prescribed autonomously.")
 
 
 if __name__ == "__main__":

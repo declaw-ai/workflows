@@ -93,10 +93,34 @@ Decision owner after remediation, and the human gate that must exist in code.
 | 16 | Fraud Explainer | upstream model decided; LLM explains | n/a (explain-only) | 🟢 |
 | 17 | Risk Narrative | LLM drafts for analyst | implement analyst pause before audit-write (or soften doc) | 🟡 |
 
-Health-tech applies the **same core** (the binding clinical/coverage decision is
-deterministic or human; the LLM explains/extracts; HIPAA/PHI handled by the
-egress + vault + redaction primitives). Data-intelligence is assistive analytics
-(no binding customer decision) — core applies, no decision-flow change.
+### 3b. Per-workflow target posture (health-tech)
+
+Health applies the **same convergent core**, grounded in health-AI research: across
+US/EU-UK/India/SG/UAE a **licensed human must own any material clinical / coverage /
+coding decision** (US Medicare-Advantage 42 CFR 422.101(c) + CMS 2024 PA rule + state
+physician-review laws like CA SB 1120 / IL clinical-peer; FDA non-device CDS
+"independent practitioner review"; EU AI Act high-risk medical; FCA coding liability).
+The overlay differs from finance only in *who the human is* (clinician / certified
+coder / MLR reviewer) and the **PHI-residency** target. Config lives in
+`health-tech/sandboxed/shared/governance.py`.
+
+| # | Workflow | Decision owner (target) | Human gate | Action |
+|---|----------|-------------------------|-----------|--------|
+| 01 | Prior Authorization | rule recommends; **licensed clinician** owns a denial | clinician gate on `RECOMMEND_DENY` (CMS / CA SB 1120) | 🔴 done |
+| 02 | Clinical Trial Matching | eligibility = recommendation; clinician owns enrollment | advisory (reframed) | 🟡 done |
+| 03 | Medical Coding + 837 | LLM drafts codes; **certified coder** signs off | coder gate before 837 is final (FCA) | 🔴 done |
+| 04 | Lab Result Explainer | explain-only | n/a | 🟢 |
+| 05 | Medication Safety | drug-interaction copilot; clinician owns prescribing | advisory (reframed) | 🟡 done |
+| 06 | Trial Match (ClinicalTrials.gov) | search/retrieval | n/a | 🟢 |
+| 07 | MSL Literature | LLM drafts brief; **MLR reviewer** owns publication | MLR draft gate | 🔴 done |
+
+Must-gate (evidence-backed): **01 coverage denial, 03 coding/837, 07 MLR**. Safely
+advisory (still logged + explainable): **02, 04, 05, 06**.
+
+**Data-intelligence** is assistive analytics/BI — no binding customer decision, so the
+core applies with **no decision-flow change** (outputs are already "recommended …" /
+"for analyst"). Confirmed against the research: governance packs / volumes are
+deliberately not added there (would be gratuitous).
 
 ---
 

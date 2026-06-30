@@ -28,6 +28,7 @@ from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, LLM_PIP, healthcare_llm_policy,
     healthcare_untrusted_io_policy, llm_envs, run_python_in_sandbox,
 )
+from shared import governance as gov  # noqa: E402
 
 
 class PAState(TypedDict, total=False):
@@ -38,7 +39,13 @@ class PAState(TypedDict, total=False):
     policy: dict
     packet: dict
     submission_id: str
-    status: Literal["pending", "approved", "denied"]
+    # A medical-necessity DENIAL is never autonomously binding — it is a
+    # recommendation held for a licensed clinician (CMS 42 CFR 422.101(c);
+    # CA SB 1120 / IL clinical-peer). Approval may be auto-issued.
+    status: Literal["pending", "approved", "pending_clinician_review"]
+    recommendation: str
+    reviewer: str
+    gate_status: str
     denial_reasons: list[str]
     appeal_letter: str
     audit_log: Annotated[list[dict], "append-only audit trail"]
@@ -147,11 +154,40 @@ def assemble_packet(state: PAState) -> PAState:
 def submit(state: PAState) -> PAState:
     print("[node submit] entering sandbox (untrusted clearinghouse)")
     result = submit_to_payer_sandboxed(state["packet"])
+    # `result["status"]` is the automated medical-necessity RECOMMENDATION, not a
+    # binding decision — the clinician_review gate owns a denial.
     return {
         "submission_id": result["submission_id"],
-        "status": result["status"],
+        "status": "pending",
+        "recommendation": gov.RECOMMEND_DENY if result["status"] == "denied"
+                          else gov.RECOMMEND_APPROVE,
         "denial_reasons": result["reasons"],
-        "audit_log": [{"node": "submit", "sandboxed": True, "result": result["status"]}],
+        "audit_log": [{"node": "submit", "sandboxed": True,
+                       "recommendation": result["status"]}],
+    }
+
+
+def clinician_review(state: PAState) -> PAState:
+    """Mandatory human gate on a medical-necessity DENIAL. An LLM/automated rule
+    may recommend, but a licensed clinician must own the denial before it is
+    issued (CMS 42 CFR 422.101(c); CA SB 1120 "Physicians Make Decisions Act";
+    IL clinical-peer). Approvals may be auto-issued; denials are held."""
+    if state.get("recommendation") == gov.RECOMMEND_DENY:
+        print(f"[node clinician_review] {gov.RECOMMEND_DENY} — "
+              f"{gov.PENDING_HUMAN_CONFIRMATION} (a {gov.REVIEWER_CLINICIAN} must own "
+              "this medical-necessity denial; not auto-denied)")
+        return {
+            "status": "pending_clinician_review",
+            "gate_status": gov.PENDING_HUMAN_CONFIRMATION,
+            "reviewer": gov.REVIEWER_CLINICIAN,
+            "audit_log": [{"node": "clinician_review",
+                           "recommendation": gov.RECOMMEND_DENY,
+                           "status": gov.PENDING_HUMAN_CONFIRMATION}],
+        }
+    print("[node clinician_review] RECOMMEND_APPROVE — approval may be auto-issued")
+    return {
+        "status": "approved",
+        "audit_log": [{"node": "clinician_review", "recommendation": gov.RECOMMEND_APPROVE}],
     }
 
 
@@ -162,8 +198,10 @@ def draft_appeal(state: PAState) -> PAState:
             "audit_log": [{"node": "draft_appeal", "sandboxed": True, "model": "gpt-4.1"}]}
 
 
-def route_after_submit(state: PAState) -> str:
-    return "draft_appeal" if state["status"] == "denied" else END
+def route_after_review(state: PAState) -> str:
+    # A recommended denial drafts an appeal (provider assist) while it is held
+    # for the clinician; an approval ends.
+    return "draft_appeal" if state.get("recommendation") == gov.RECOMMEND_DENY else END
 
 
 def build_graph():
@@ -172,12 +210,15 @@ def build_graph():
     g.add_node("policy_check", policy_check)
     g.add_node("assemble_packet", assemble_packet)
     g.add_node("submit", submit)
+    g.add_node("clinician_review", clinician_review)
     g.add_node("draft_appeal", draft_appeal)
     g.add_edge(START, "gather")
     g.add_edge("gather", "policy_check")
     g.add_edge("policy_check", "assemble_packet")
     g.add_edge("assemble_packet", "submit")
-    g.add_conditional_edges("submit", route_after_submit,
+    # Denial recommendation passes through the mandatory clinician gate.
+    g.add_edge("submit", "clinician_review")
+    g.add_conditional_edges("clinician_review", route_after_review,
                             {"draft_appeal": "draft_appeal", END: END})
     g.add_edge("draft_appeal", END)
     return g.compile(checkpointer=MemorySaver())
@@ -194,12 +235,17 @@ def main() -> None:
     result = graph.invoke(initial, config=config)
 
     print("\n=== Prior Auth Result (sandboxed, real LLM) ===")
+    print(f"Governance:     {gov.governance_banner()}")
     print(f"Patient:        {result['patient_id']}")
     print(f"Drug:           {result['requested_drug']}")
     print(f"Submission ID:  {result.get('submission_id')}")
-    print(f"Status:         {result.get('status')}")
-    if result.get("status") == "denied":
+    print(f"Recommendation: {result.get('recommendation')}  ->  status={result.get('status')}")
+    if result.get("recommendation") == gov.RECOMMEND_DENY:
+        print(f"Clinician gate: {result.get('gate_status')} — owner: {result.get('reviewer')}")
         print(f"Reasons:        {result['denial_reasons']}")
+        print("[NOTE] The denial is NOT issued autonomously — a licensed clinician "
+              "must own it (CMS 42 CFR 422.101(c) / CA SB 1120). The letter below is "
+              "drafted to assist, pending that review.")
         print("\n--- Appeal Letter (gpt-4.1, PHI rehydrated by declaw proxy) ---")
         print(result["appeal_letter"])
 

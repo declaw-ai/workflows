@@ -1,5 +1,11 @@
 """W7 — MSL Literature Support, sandboxed with declaw.
 
+Governance posture (see shared/governance.py): MLR (medical-legal-regulatory)
+review is a mandatory human process. The AutoGen chat produces a DRAFT brief
+only — it never states FDA-approved indications as a final, publishable answer.
+The writer ends with DRAFT_READY_FOR_MLR_REVIEW; the brief is marked
+DRAFT_PENDING_REVIEW and a human REVIEWER_MLR approves before publication.
+
 Same AutoGen chat, but runs entirely inside one microVM whose egress
 allowlist is `{api.openai.com, eutils.ncbi.nlm.nih.gov, api.fda.gov}`.
 This workflow ingests untrusted external content (PubMed abstracts and
@@ -23,6 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
+from shared import governance as gov  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
     healthcare_multi_api_policy, llm_envs, run_python_in_sandbox,
 )
@@ -38,6 +45,13 @@ MSL_SCRIPT = textwrap.dedent("""
 
     with open('/tmp/in.json') as f: inp = json.load(f)
     QUESTION = inp['question']
+
+    # Governance labels injected from shared.governance on the host (the sandbox
+    # cannot import the shared module). The LLM produces a DRAFT only; a human MLR
+    # (medical-legal-regulatory) reviewer approves before publication.
+    GOV = inp['gov']
+    DRAFT_PENDING_REVIEW = GOV['DRAFT_PENDING_REVIEW']
+    REVIEWER_MLR = GOV['REVIEWER_MLR']
 
     def _get_json(url, timeout=15):
         req = urllib.request.Request(url, headers={'Accept':'application/json'})
@@ -114,15 +128,19 @@ MSL_SCRIPT = textwrap.dedent("""
         writer = AssistantAgent(
             name='writer', model_client=model,
             system_message=(
-                'You are an MSL writing a brief for a field medical director. '
-                'Combine the literature bullets + FDA label snippet into a '
-                '6-sentence MLR-adjacent brief with inline PMID citations. '
-                'End your message with the literal token MLR_REVIEW_READY.'
+                'You are an MSL drafting a brief for MLR review — this is a DRAFT, '
+                'NOT a final or publishable answer, and FDA-approved indications '
+                'you state are draft claims awaiting review. Combine the literature '
+                'bullets + FDA label snippet into a 6-sentence MLR-adjacent DRAFT '
+                'with inline PMID citations. State that this is '
+                f'{DRAFT_PENDING_REVIEW} and that a human {REVIEWER_MLR} must '
+                'approve it before any external use or publication. '
+                'End your message with the literal token DRAFT_READY_FOR_MLR_REVIEW.'
             ),
         )
         team = RoundRobinGroupChat(
             [lit, label, writer],
-            termination_condition=TextMentionTermination('MLR_REVIEW_READY')
+            termination_condition=TextMentionTermination('DRAFT_READY_FOR_MLR_REVIEW')
                                   | MaxMessageTermination(20),
         )
         result = await team.run(task=QUESTION)
@@ -130,7 +148,7 @@ MSL_SCRIPT = textwrap.dedent("""
         for m in result.messages:
             if getattr(m, 'source', None) == 'writer':
                 c = getattr(m, 'content', '')
-                if isinstance(c, str) and 'MLR_REVIEW_READY' in c:
+                if isinstance(c, str) and 'DRAFT_READY_FOR_MLR_REVIEW' in c:
                     brief = c
         transcript = [f\"[{getattr(m,'source','?')}] {str(getattr(m,'content',''))[:500]}\" for m in result.messages]
         with open('/tmp/out.json','w') as f:
@@ -147,19 +165,33 @@ QUESTION = (
 
 
 def main() -> None:
-    print("=== MSL Literature Support (sandboxed, 1 microVM, injection scan ON) ===\n")
+    print("=== MSL Literature Support (sandboxed, 1 microVM, injection scan ON) ===")
+    print(f"governance: {gov.governance_banner()}")
+    print(f"The LLM produces a DRAFT for MLR review; a human {gov.REVIEWER_MLR} "
+          f"approves before publication ({gov.DRAFT_PENDING_REVIEW}).\n")
     out = run_python_in_sandbox(
         "msl-literature", MSL_SCRIPT,
         healthcare_multi_api_policy(enable_injection_scan=True),
-        payload={"question": QUESTION},
+        payload={
+            "question": QUESTION,
+            # Governance labels — the LLM only DRAFTS; a human MLR reviewer owns
+            # publication (the sandbox can't import shared.governance).
+            "gov": {
+                "DRAFT_PENDING_REVIEW": gov.DRAFT_PENDING_REVIEW,
+                "REVIEWER_MLR": gov.REVIEWER_MLR,
+            },
+        },
         envs=llm_envs(),
         timeout=420,
     )
     print("--- Transcript ---")
     for line in out.get("transcript", []):
         print(line)
-    print("\n--- Final MLR brief ---")
+    print("\n--- DRAFT MLR brief (pending MLR review) ---")
     print(out.get("brief") or "(no writer message captured)")
+    print(f"\n[gate] This brief is {gov.DRAFT_PENDING_REVIEW}: a human "
+          f"{gov.REVIEWER_MLR} must approve it before any external use or "
+          "publication. Nothing is published autonomously.")
 
 
 if __name__ == "__main__":

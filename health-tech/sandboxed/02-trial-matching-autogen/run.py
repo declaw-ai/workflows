@@ -1,5 +1,11 @@
 """Trial Matching — sandboxed, **real AutoGen v0.4 inside the microVM**.
 
+Governance posture (see shared/governance.py): trial eligibility is a
+RECOMMENDATION, not an enrollment decision. The deterministic
+``evaluate_eligibility`` verdict (potential_match / not_eligible) is surfaced as
+a RECOMMEND_REVIEW for a licensed clinician (REVIEWER_CLINICIAN), who owns the
+enrollment decision. Advisory only — no hard gate.
+
 The full AutoGen RoundRobinGroupChat runs inside a single Firecracker
 sandbox. PHI (patient record + trial registry entries) crosses the declaw
 security proxy on every outbound OpenAI call — redacted outbound,
@@ -21,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "sandboxed"))
 from shared.mock_phi import CLINICAL_TRIALS, PATIENTS  # noqa: E402
+from shared import governance as gov  # noqa: E402
 from shared.declaw_helpers import (  # noqa: E402
     LLM_DOMAINS, healthcare_llm_policy, llm_envs, run_python_in_sandbox,
 )
@@ -38,6 +45,14 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
         inp = json.load(f)
     PATIENT = inp["patient"]
     REGISTRY = inp["registry"]
+
+    # Governance labels injected from shared.governance on the host (the sandbox
+    # cannot import the shared module). The eligibility verdict is a RECOMMENDATION
+    # for a licensed clinician, who owns the enrollment decision — never an
+    # autonomous enrollment.
+    GOV = inp["gov"]
+    RECOMMEND_REVIEW = GOV["RECOMMEND_REVIEW"]
+    REVIEWER_CLINICIAN = GOV["REVIEWER_CLINICIAN"]
 
     def fetch_patient(patient_id: str) -> dict:
         \"\"\"Return the patient record for the given patient_id.\"\"\"
@@ -99,7 +114,10 @@ AUTOGEN_SCRIPT = textwrap.dedent("""
             system_message=(
                 f"For each trial from the coordinator, call fetch_patient("
                 f"'{pid}') then evaluate_eligibility(patient, trial). "
-                "Summarize each verdict in one line. End FINAL message "
+                f"Each verdict is a RECOMMENDATION ({RECOMMEND_REVIEW}) for a "
+                f"{REVIEWER_CLINICIAN}, who OWNS the enrollment decision — it is "
+                "NOT an enrollment decision. Summarize each verdict in one line, "
+                "framed as a recommendation for clinician review. End FINAL message "
                 "with token MATCHING_DONE."
             ),
         )
@@ -139,12 +157,23 @@ def fetch_patient_record(patient_id: str) -> dict:
 
 def main() -> None:
     patient = fetch_patient_record("p-002")
-    print("=== Trial Matching (sandboxed, real AutoGen inside microVM) ===\n")
+    print("=== Trial Matching (sandboxed, real AutoGen inside microVM) ===")
+    print(f"governance: {gov.governance_banner()}")
+    print(f"Eligibility is a {gov.RECOMMEND_REVIEW} for a {gov.REVIEWER_CLINICIAN}; "
+          "the clinician owns the enrollment decision (advisory, not a gate).\n")
 
     pol = healthcare_llm_policy(allow_domains=LLM_DOMAINS)
     out = run_python_in_sandbox(
         "autogen-matching", AUTOGEN_SCRIPT, pol,
-        payload={"patient": patient, "registry": CLINICAL_TRIALS},
+        payload={
+            "patient": patient, "registry": CLINICAL_TRIALS,
+            # Governance labels — the verdict is a recommendation; a licensed
+            # clinician owns enrollment (the sandbox can't import shared.governance).
+            "gov": {
+                "RECOMMEND_REVIEW": gov.RECOMMEND_REVIEW,
+                "REVIEWER_CLINICIAN": gov.REVIEWER_CLINICIAN,
+            },
+        },
         # autogen-agentchat + autogen-ext are baked into the `ai-agent` template
         envs=llm_envs(),
         timeout=400,
@@ -153,8 +182,11 @@ def main() -> None:
     print("\n--- Transcript ---")
     for line in out.get("transcript", []):
         print(line)
-    print("\n--- Final eligibility verdict ---")
+    print("\n--- Eligibility RECOMMENDATION (clinician owns enrollment) ---")
     print(out.get("final") or "(no final checker message captured)")
+    print(f"\n[note] This is a {gov.RECOMMEND_REVIEW} for a {gov.REVIEWER_CLINICIAN}; "
+          "no patient is enrolled autonomously — a clinician owns the enrollment "
+          "decision.")
 
 
 if __name__ == "__main__":
